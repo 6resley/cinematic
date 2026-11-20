@@ -7,6 +7,7 @@ import { FlyLook } from './flylook.js';
 import { toLocal, toWorld, reframeKeys, bodyAxes } from './mount.js';
 import { Clip } from './anim.js';
 import { decodeDDS, gameNormalToStandard, gameSpecToRoughness } from './dds.js';
+import { frameTimes, subframeTimes, safeName, canMakeMp4, createMp4Sink, createPngSink } from './renderqueue.js';
 import { createClient, runTurn, describeError, MODEL } from './assistant.js';
 
 const $ = (id) => document.getElementById(id);
@@ -428,6 +429,7 @@ function selectActor(id) {
 function viewSize() { return { w: Math.max(1, viewEl.clientWidth), h: Math.max(1, viewEl.clientHeight) }; }
 
 function resize() {
+  if (rendering) return;
   const { w, h } = viewSize();
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
   renderer.setSize(w, h, false);
@@ -1168,6 +1170,158 @@ $('anim-speed').addEventListener('input', (e) => setAnimation({ speed: Number(e.
 $('anim-loop').addEventListener('change', (e) => setAnimation({ loop: e.target.checked }));
 $('anim-travel').addEventListener('change', (e) => setAnimation({ travel: e.target.checked }));
 
+// ------------------------------------------------------------------ render queue
+const jobs = [];
+let rendering = false, queueStop = false, jobSeq = 0;
+
+function addJob(options = {}) {
+  const [width, height] = (options.size || $('q-size').value).split('x').map(Number);
+  const from = clamp(Number(options.from ?? $('q-from').value) || 0, 0, state.duration);
+  const to = clamp(Number(options.to ?? $('q-to').value) || state.duration, 0, state.duration);
+  const job = {
+    id: ++jobSeq,
+    name: safeName(options.name ?? $('q-name').value),
+    from: Math.min(from, to), to: Math.max(from, to), width, height,
+    fps: Number(options.fps ?? $('q-fps').value),
+    format: options.format ?? $('q-format').value,
+    samples: Number(options.samples ?? $('q-blur').value),
+    status: 'waiting', done: 0, total: 0, note: '',
+  };
+  job.total = frameTimes(job.from, job.to, job.fps).length;
+  jobs.push(job);
+  syncQueueUI();
+  return job;
+}
+
+function syncQueueUI() {
+  $('q-list').replaceChildren(...jobs.map((job) => {
+    const li = document.createElement('li');
+    const text = document.createElement('div');
+    const title = document.createElement('strong');
+    title.textContent = job.name;
+    const detail = document.createElement('span');
+    detail.textContent = `${job.width}×${job.height} · ${job.fps} fps · ${job.format === 'mp4' ? 'MP4' : 'PNG frames'}`
+      + `${job.samples > 1 ? ` · blur ×${job.samples}` : ''} · ${job.from.toFixed(2)}–${job.to.toFixed(2)} s`;
+    const state2 = document.createElement('em');
+    state2.textContent = job.status === 'rendering' ? `frame ${job.done} of ${job.total}${job.note}`
+      : job.status === 'waiting' ? `${job.total} frames, waiting` : `${job.status}${job.note}`;
+    text.append(title, detail, state2);
+    const bar = document.createElement('div');
+    bar.className = 'q-bar';
+    bar.style.setProperty('--done', `${job.total ? (100 * job.done) / job.total : 0}%`);
+    const remove = document.createElement('button');
+    remove.textContent = '✕';
+    remove.title = 'Remove from the queue';
+    remove.disabled = job.status === 'rendering';
+    remove.addEventListener('click', () => { jobs.splice(jobs.indexOf(job), 1); syncQueueUI(); });
+    li.append(text, remove, bar);
+    return li;
+  }));
+  const waiting = jobs.some((j) => j.status === 'waiting');
+  $('btn-q-start').disabled = rendering || !waiting;
+  $('btn-q-stop').disabled = !rendering;
+  $('btn-q-add').disabled = rendering;
+  $('q-info').textContent = jobs.length ? '' : 'Nothing queued. Set up a shot, choose the output below and press Add to queue.';
+}
+
+function deliver(name, blob) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+}
+
+/** Render one job frame by frame. Each frame is drawn at its exact time, so speed of the machine does not matter. */
+async function runJob(job, hooks) {
+  const { width, height } = job;
+  if (job.format === 'mp4' && !(await canMakeMp4(width, height))) {
+    job.status = 'failed'; job.note = ': this browser cannot encode H.264 video at this size; use PNG frames';
+    return;
+  }
+  const accum = document.createElement('canvas');
+  accum.width = width; accum.height = height;
+  const ctx = accum.getContext('2d');
+  renderer.setPixelRatio(1);
+  renderer.setSize(width, height, false);
+  renderer.setScissorTest(false);
+  renderer.setViewport(0, 0, width, height);
+  shotCam.aspect = width / height;
+  shotCam.updateProjectionMatrix();
+  setOverlays(false);
+  const sink = job.format === 'mp4' ? await createMp4Sink(accum, job.fps) : createPngSink(accum, job.name, hooks.writeFile);
+  const times = frameTimes(job.from, job.to, job.fps);
+  const started = performance.now();
+  job.status = 'rendering';
+  try {
+    for (let i = 0; i < times.length; i++) {
+      if (queueStop) { job.status = 'stopped'; await sink.cancel(); return; }
+      subframeTimes(times[i], job.fps, job.samples).forEach((t, k) => {
+        state.time = t;                              // exact time, not snapped to the timeline's frame grid
+        camDirty = false;
+        applyTrack();
+        renderer.render(scene, shotCam);
+        ctx.globalAlpha = 1 / (k + 1);               // running average of the sub-frames gives motion blur
+        ctx.drawImage(canvas, 0, 0);
+      });
+      await sink.add(i);
+      job.done = i + 1;
+      const left = ((performance.now() - started) / (i + 1)) * (times.length - i - 1) / 1000;
+      job.note = left > 1 ? ` · about ${left > 90 ? `${Math.round(left / 60)} min` : `${Math.round(left)} s`} left` : '';
+      if (i % 4 === 0) { syncQueueUI(); await new Promise((r) => setTimeout(r, 0)); }     // let the Stop button work
+    }
+    const file = await sink.finish();
+    if (file) (hooks.onFile || deliver)(`${job.name}.mp4`, file);
+    job.status = 'done';
+    job.note = ` in ${((performance.now() - started) / 1000).toFixed(1)} s`;
+  } catch (err) {
+    job.status = 'failed'; job.note = `: ${err.message}`;
+    try { await sink.cancel(); } catch { /* already closed */ }
+  } finally {
+    setOverlays(true);
+  }
+}
+
+/** Render every waiting job in order. `hooks` lets a caller supply where files go (used by automated checks). */
+async function runQueue(hooks = {}) {
+  if (rendering) return;
+  const waiting = jobs.filter((j) => j.status === 'waiting');
+  if (!waiting.length) return;
+  if (!hooks.writeFile && waiting.some((j) => j.format === 'png')) {
+    if (!window.showDirectoryPicker) { setStatus('This browser cannot write image sequences to a folder. Use MP4, or Chrome or Edge.'); return; }
+    let dir;
+    try { dir = await window.showDirectoryPicker({ mode: 'readwrite' }); } catch { setStatus('No folder chosen, so nothing was rendered'); return; }
+    hooks.writeFile = async (name, blob) => {
+      const handle = await dir.getFileHandle(name, { create: true });
+      const stream = await handle.createWritable();
+      await stream.write(blob);
+      await stream.close();
+    };
+  }
+  const savedTime = state.time;
+  rendering = true; queueStop = false; playing = false;
+  syncPlayButton();
+  syncQueueUI();
+  try {
+    for (const job of waiting) {
+      if (queueStop) break;
+      setStatus(`Rendering ${job.name}…`);
+      await runJob(job, hooks);
+      syncQueueUI();
+    }
+  } finally {
+    rendering = false;
+    resize();
+    setTime(savedTime);
+    syncQueueUI();
+    setStatus(queueStop ? 'Rendering stopped' : 'Render queue finished');
+  }
+}
+
+$('btn-q-add').addEventListener('click', () => addJob());
+$('btn-q-start').addEventListener('click', () => runQueue());
+$('btn-q-stop').addEventListener('click', () => { queueStop = true; });
+
 // ------------------------------------------------------------------ assistant tools
 const round3 = (v) => +v.toFixed(3);
 const scratchCam = new THREE.PerspectiveCamera(40, SHOT_ASPECT, 0.05, 800);
@@ -1468,6 +1622,7 @@ syncAi();
 const clock = new THREE.Clock();
 function tick() {
   const dt = Math.min(clock.getDelta(), 0.1);
+  if (rendering) { requestAnimationFrame(tick); return; }      // the render queue is using the renderer
   if (playing) {
     let t = state.time + dt;
     if (t >= state.duration) { if (state.loop) t = 0; else { t = state.duration; playing = false; syncPlayButton(); } }
@@ -1494,6 +1649,9 @@ rebuildActors();
 syncMountUI();
 syncAnimUI();
 syncPropsUI();
+syncQueueUI();
+$('q-to').value = state.duration;
+$('q-fps').value = state.fps;
 setMode('free');
 keysChanged();
 resize();
@@ -1503,6 +1661,6 @@ tick();
 // Handle for automated checks and for poking at things from the console.
 window.app = {
   state, get track() { return track; }, get bones() { return bones; }, shotCam, freeCam, actorRoot,
-  setTime, setMode, setKeyNow, setMount, applyMountPreset, selectActor, renderStill, serialise, load, importFiles, importProp, get props() { return props; }, importAnimations, setAnimation, execTool,
+  setTime, setMode, setKeyNow, setMount, applyMountPreset, selectActor, renderStill, serialise, load, importFiles, importProp, get props() { return props; }, importAnimations, setAnimation, execTool, addJob, runQueue, get jobs() { return jobs; },
   assistant: { send: aiSend, messages: aiMessages, useClient(c) { aiClientOverride = c; } },
 };

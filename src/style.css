@@ -135,3 +135,14 @@ dialog#chooser::backdrop { background: #000a; }
 #chooser-list { display: flex; flex-direction: column; gap: 4px; margin-bottom: 12px; max-height: 55vh; overflow: auto; }
 #chooser-list button { text-align: left; }
 #topbar { gap: 10px; }
+
+/* render queue */
+#q-list { list-style: none; margin: 0 0 8px; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+#q-list:empty { display: none; }
+#q-list li { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px; align-items: start; padding: 8px 8px 11px; border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
+#q-list li div:first-child { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+#q-list strong { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#q-list span, #q-list em { color: var(--muted); font-size: 12px; font-style: normal; }
+#q-list button { padding: 2px 7px; }
+.q-bar { position: absolute; left: 0; bottom: 0; height: 3px; width: var(--done, 0%); background: var(--accent); }
+.row input[type="text"] { grid-column: 2 / 4; font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: var(--radius); padding: 4px 8px; min-width: 0; }

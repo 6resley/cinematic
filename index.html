@@ -112,7 +112,42 @@
         </label>
         <div class="row buttons"><button id="btn-render" class="primary" title="Render the frame at the playhead through the shot camera (Shift+R)">Render current frame</button></div>
         <h3>Render queue</h3>
-        <p class="hint">Queued renders of whole shots arrive in the next milestone.</p>
+        <ul id="q-list"></ul>
+        <p class="hint" id="q-info"></p>
+        <label class="row"><span>Name</span><input id="q-name" type="text" value="shot"></label>
+        <label class="row"><span>From</span><input id="q-from" type="number" min="0" step="0.1" value="0"><output>s</output></label>
+        <label class="row"><span>To</span><input id="q-to" type="number" min="0" step="0.1"><output>s</output></label>
+        <label class="row"><span>Resolution</span>
+          <select id="q-size">
+            <option value="1280x720">1280 × 720</option>
+            <option value="1920x1080" selected>1920 × 1080</option>
+            <option value="2560x1440">2560 × 1440</option>
+            <option value="3840x2160">3840 × 2160</option>
+          </select>
+        </label>
+        <label class="row"><span>Frame rate</span>
+          <select id="q-fps"><option>24</option><option>30</option><option selected>60</option><option>120</option><option>240</option></select>
+        </label>
+        <label class="row"><span>Output</span>
+          <select id="q-format">
+            <option value="mp4">MP4 video (H.264)</option>
+            <option value="png">PNG image sequence</option>
+          </select>
+        </label>
+        <label class="row"><span>Motion blur</span>
+          <select id="q-blur">
+            <option value="1">Off</option>
+            <option value="4">Light</option>
+            <option value="8">Smooth</option>
+            <option value="16">Heavy</option>
+          </select>
+        </label>
+        <div class="row buttons"><button id="btn-q-add">Add to queue</button></div>
+        <div class="row buttons">
+          <button id="btn-q-start" class="primary">Start rendering</button>
+          <button id="btn-q-stop" disabled>Stop</button>
+        </div>
+        <p class="hint">Each frame is rendered at its exact moment, so the result is smooth at any frame rate however fast this computer is. Higher frame rates and motion blur take proportionally longer.</p>
       </section>
 
       <section data-panel="assistant" class="panel">
