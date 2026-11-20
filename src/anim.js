@@ -1,5 +1,6 @@
 // Animation clips exported by the ripper (.anim.json): pure sampling, no DOM.
-// Rotations are quaternions relative to the parent bone; positions are offsets from the parent in the model's own units.
+// Rotations are quaternions relative to the parent bone. Positions are shifts, in the model's own units, that are
+// added to the bone's offset in the model (the hips dropping in a run, the head bobbing); they do not replace it.
 import * as THREE from 'three';
 
 const _a = new THREE.Quaternion();

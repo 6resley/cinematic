@@ -156,7 +156,7 @@ function applyActor() {
       const bone = bones[track.name];
       if (!bone) continue;
       if (!Clip.rotation(track, frame, bone.quaternion)) bone.quaternion.identity();
-      Clip.position(track, frame, bone.position);       // no position track: the bone keeps the model's own offset
+      if (Clip.position(track, frame, _pa)) bone.position.add(_pa);   // positions are shifts added to the model's own bone offset
     }
   }
   baseQuat.clear();
