@@ -5,6 +5,7 @@ import * as THREE from 'three';
 
 const _a = new THREE.Quaternion();
 const _b = new THREE.Quaternion();
+const _cyclePos = new THREE.Vector3(), _cycleRot = new THREE.Quaternion(), _step = new THREE.Vector3();
 
 /** Index of the last key at or before `frame`. `times` is sorted and starts at 0. */
 function keyBefore(times, frame) {
@@ -25,6 +26,7 @@ export class Clip {
     this.loop = !!data.loop;
     this.hasRootMotion = !!data.has_root_motion;
     this.bones = data.bones;
+    this.root = data.root || null;             // how the whole character travels: { pos, rot } tracks, or null
     this.unnamed = this.bones.length > 0 && this.bones.every((b) => /^bone_\d+$/.test(b.name));
   }
 
@@ -36,6 +38,36 @@ export class Clip {
     let f = seconds * this.framerate;
     if (loop) { f %= this.frames; if (f < 0) f += this.frames; }
     return Math.min(Math.max(f, 0), this.frames);
+  }
+
+  /** Distance travelled over one pass of the clip, in the model's units. Zero without root motion. */
+  get travelPerPass() {
+    const p = this.root?.pos;
+    return p ? Math.hypot(...p.v[p.v.length - 1]) : 0;
+  }
+
+  /**
+   * Where the clip has carried the character after `seconds` of playing, written into outPos / outQuat
+   * (model units, relative to where it started). A looping clip keeps going: each pass starts where the
+   * last one ended, facing the way it ended.
+   */
+  rootAt(seconds, loop, outPos, outQuat) {
+    outPos.set(0, 0, 0);
+    outQuat.identity();
+    if (!this.root || this.frames <= 0) return;
+    let f = Math.max(0, seconds * this.framerate), passes = 0;
+    if (loop) { passes = Math.min(10000, Math.floor(f / this.frames)); f -= passes * this.frames; }
+    else f = Math.min(f, this.frames);
+    if (passes) {
+      Clip.position(this.root, this.frames, _cyclePos) || _cyclePos.set(0, 0, 0);
+      Clip.rotation(this.root, this.frames, _cycleRot) || _cycleRot.identity();
+      for (let i = 0; i < passes; i++) {
+        outPos.add(_step.copy(_cyclePos).applyQuaternion(outQuat));
+        outQuat.multiply(_cycleRot);
+      }
+    }
+    if (Clip.position(this.root, f, _step)) outPos.add(_step.applyQuaternion(outQuat));
+    if (Clip.rotation(this.root, f, _cycleRot)) outQuat.multiply(_cycleRot);
   }
 
   /** Rotation of one bone track at `frame`, written into `out`. Returns false if the track has no rotation. */

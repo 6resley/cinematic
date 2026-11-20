@@ -117,6 +117,7 @@ export const TOOLS = [
         start: { type: 'number', description: 'Time on the timeline, in seconds, where the animation begins.' },
         speed: { type: 'number', description: 'Playback speed, 0.05 to 4. 1 is normal, 0.25 is slow motion.' },
         loop: { type: 'boolean', description: 'Repeat for the rest of the timeline.' },
+        travel: { type: 'boolean', description: 'True lets the animation carry the character across the scene (a sprint covers ground); false keeps it on the spot.' },
       },
     },
   },

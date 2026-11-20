@@ -64,3 +64,36 @@ test('flags animations whose bone names were never resolved', () => {
   assert.equal(make().unnamed, false);
   assert.equal(make({ bones: [{ name: 'bone_0' }, { name: 'bone_1' }] }).unnamed, true);
 });
+
+test('root motion: travels within a pass and keeps going across loops', () => {
+  const c = make({ root: { pos: { t: [0, 30], v: [[0, 0, 0], [100, 0, 0]] } } });
+  const p = new THREE.Vector3(), q = new THREE.Quaternion();
+  close(c.travelPerPass, 100);
+  c.rootAt(0.5, true, p, q); close(p.x, 50);
+  c.rootAt(1.0, true, p, q); close(p.x, 100);
+  c.rootAt(2.5, true, p, q); close(p.x, 250);            // two full passes and a half
+  c.rootAt(2.5, false, p, q); close(p.x, 100);           // a one-shot stops where it ends
+  c.rootAt(-1, true, p, q); close(p.x, 0);
+});
+
+test('root motion: no jump at the loop point', () => {
+  const c = make({ root: { pos: { t: [0, 30], v: [[0, 0, 0], [100, 0, 0]] } } });
+  const a = new THREE.Vector3(), b = new THREE.Vector3(), q = new THREE.Quaternion();
+  c.rootAt(0.9999, true, a, q); c.rootAt(1.0001, true, b, q);
+  assert.ok(Math.abs(a.x - b.x) < 0.1);
+});
+
+test('root motion: a turn carries into the next pass', () => {
+  const quarter = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), Math.PI / 2).toArray();
+  const c = make({ root: { pos: { t: [0, 30], v: [[0, 0, 0], [10, 0, 0]] }, rot: { t: [0, 30], q: [[0, 0, 0, 1], quarter] } } });
+  const p = new THREE.Vector3(), q = new THREE.Quaternion();
+  c.rootAt(2, true, p, q);                               // forward 10, turn left, forward 10 again
+  close(p.x, 10, 1e-4); close(p.y, 10, 1e-4);
+});
+
+test('clips without root motion stay put', () => {
+  const p = new THREE.Vector3(1, 1, 1), q = new THREE.Quaternion();
+  make().rootAt(3, true, p, q);
+  assert.deepEqual(p.toArray(), [0, 0, 0]);
+  close(make().travelPerPass, 0);
+});

@@ -24,7 +24,7 @@ const defaults = () => ({
   markers: [],
   mount: { bone: null, lookAt: null, level: false, roll: 0 },   // what the shot camera rides on
   props: [],                                  // settings for attached props, by name: { name, bone, hidden }
-  anim: { name: null, start: 0, speed: 1, loop: true },   // which imported animation plays on the actor
+  anim: { name: null, start: 0, speed: 1, loop: true, travel: true },   // which imported animation plays on the actor
   pose: {},                                   // bone name -> rotation offset layered on top of the animation (or the imported pose)
   scene: { tod: 15, azimuth: 60, exposure: 1, fog: 0, grid: true },
 });
@@ -159,6 +159,12 @@ function applyActor() {
       if (!bone) continue;
       if (!Clip.rotation(track, frame, bone.quaternion)) bone.quaternion.identity();
       if (Clip.position(track, frame, _pa)) bone.position.add(_pa);   // positions are shifts added to the model's own bone offset
+    }
+    const origin = bones.tag_origin;
+    if (state.anim.travel && clip.root && origin) {         // carry the whole character the way the animation moves
+      clip.rootAt(Math.max(0, state.time - state.anim.start) * state.anim.speed, state.anim.loop, _pa, _bq);
+      origin.position.add(_pa);
+      origin.quaternion.multiply(_bq);
     }
   }
   baseQuat.clear();
@@ -1121,9 +1127,11 @@ function syncAnimUI() {
   $('anim-speed').value = state.anim.speed;
   $('anim-speed-out').textContent = `${state.anim.speed.toFixed(2)}×`;
   $('anim-loop').checked = state.anim.loop;
+  $('anim-travel').checked = state.anim.travel;
   const clip = activeClip();
   $('anim-info').textContent = clip
     ? `${clip.duration.toFixed(2)} s at ${clip.framerate} fps · ${clip.bones.length} bones${clip.loop ? ' · made to loop' : ''}`
+      + (clip.root ? ` · travels ${(clip.travelPerPass * 0.0254).toFixed(1)} m per pass` : ' · stays in place (no travel data in this file)')
     : (state.anim.name ? `"${state.anim.name}" is not loaded. Import it again to see it play.` : '');
   rebuildAnimBar();
 }
@@ -1158,6 +1166,7 @@ $('anim-clip').addEventListener('change', (e) => {
 $('anim-start').addEventListener('change', (e) => setAnimation({ start: Number(e.target.value) }));
 $('anim-speed').addEventListener('input', (e) => setAnimation({ speed: Number(e.target.value) }));
 $('anim-loop').addEventListener('change', (e) => setAnimation({ loop: e.target.checked }));
+$('anim-travel').addEventListener('change', (e) => setAnimation({ travel: e.target.checked }));
 
 // ------------------------------------------------------------------ assistant tools
 const round3 = (v) => +v.toFixed(3);
@@ -1287,7 +1296,7 @@ const toolHandlers = {
     setMount(next);
     return JSON.stringify({ bone: state.mount.bone, look_at_bone: state.mount.lookAt, keep_level: state.mount.level });
   },
-  list_animations: () => JSON.stringify([...clipLibrary.values()].map((c) => ({ name: c.name, seconds: round3(c.duration), made_to_loop: c.loop, usable: !c.unnamed }))),
+  list_animations: () => JSON.stringify([...clipLibrary.values()].map((c) => ({ name: c.name, seconds: round3(c.duration), made_to_loop: c.loop, travels_metres_per_pass: round3(c.travelPerPass * 0.0254), usable: !c.unnamed }))),
   set_animation: (i) => {
     if (i.name && !clipLibrary.has(i.name)) throw new Error(`No imported animation named "${i.name}". Call list_animations to see what is loaded.`);
     const next = {};
@@ -1295,6 +1304,7 @@ const toolHandlers = {
     if (i.start !== undefined) next.start = numIn(i.start, 'start', 0, state.duration);
     if (i.speed !== undefined) next.speed = numIn(i.speed, 'speed', 0.05, 4);
     if (i.loop !== undefined) next.loop = !!i.loop;
+    if (i.travel !== undefined) next.travel = !!i.travel;
     setAnimation(next);
     return JSON.stringify(state.anim);
   },
