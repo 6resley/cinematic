@@ -1,0 +1,11 @@
+node_modules/
+dist/
+# Game assets never go in this repository: every user imports from their own copy of the game.
+assets/
+library/
+*.glb
+*.gltf
+*.dds
+*.iwi
+*.ff
+*.iwd
