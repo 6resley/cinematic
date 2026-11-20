@@ -42,6 +42,7 @@
         <button data-tab="camera" class="active" role="tab">Camera</button>
         <button data-tab="scene" role="tab">Scene</button>
         <button data-tab="render" role="tab">Render</button>
+        <button data-tab="assistant" role="tab">Assistant</button>
       </nav>
 
       <section data-panel="camera" class="panel active">
@@ -86,6 +87,24 @@
         <div class="row buttons"><button id="btn-render" class="primary" title="Render the frame at the playhead through the shot camera (Shift+R)">Render current frame</button></div>
         <h3>Render queue</h3>
         <p class="hint">Queued renders of whole shots arrive in the next milestone.</p>
+      </section>
+
+      <section data-panel="assistant" class="panel">
+        <h3>Assistant</h3>
+        <p class="hint first">Describe what you want and it will set up cameras, lighting and poses for you. Runs on <span id="ai-model"></span>.</p>
+        <details id="ai-setup">
+          <summary>API key</summary>
+          <label class="row key"><input id="ai-key" type="password" autocomplete="off" placeholder="Paste your Anthropic API key"><button id="ai-key-save">Save</button></label>
+          <p class="hint" id="ai-key-state"></p>
+          <p class="hint">The key stays in this browser on this computer and is only sent to Anthropic. Saving an empty box removes it.</p>
+        </details>
+        <div id="ai-log" aria-live="polite"></div>
+        <textarea id="ai-input" rows="3" placeholder="e.g. Slow push-in on the face over 4 seconds, at dusk"></textarea>
+        <div class="row buttons">
+          <button id="ai-send" class="primary">Send</button>
+          <button id="ai-stop" disabled>Stop</button>
+        </div>
+        <div class="row buttons"><button id="ai-undo" disabled title="Put the project back to how it was before the assistant's last request">Undo assistant changes</button></div>
       </section>
     </aside>
 

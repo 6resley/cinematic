@@ -4,6 +4,7 @@ import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { CameraTrack, EASE_MODES } from './keys.js';
 import { FlyLook } from './flylook.js';
+import { createClient, runTurn, describeError, MODEL } from './assistant.js';
 
 const $ = (id) => document.getElementById(id);
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
@@ -18,6 +19,7 @@ const AUTOSAVE_KEY = 'cinematic.autosave.v1';
 const defaults = () => ({
   duration: 10, fps: 60, time: 0, loop: false, autoKey: false,
   markers: [],
+  pose: {},                                   // bone name -> local rotation, for bones moved off the imported pose
   scene: { tod: 15, azimuth: 60, exposure: 1, fog: 0, grid: true },
 });
 const state = defaults();
@@ -105,6 +107,72 @@ const fly = new FlyLook(canvas, () => cameraEdited());
 fly.camera = shotCam;
 resetCameras();
 
+// ------------------------------------------------------------------ skeleton and pose
+let bones = {};
+const bindPose = new Map();
+
+function collectBones() {
+  bones = {};
+  bindPose.clear();
+  actorRoot.traverse((o) => {
+    if (o.isBone && !bones[o.name]) { bones[o.name] = o; bindPose.set(o.name, o.quaternion.toArray()); }
+  });
+}
+
+/** Put every bone back to its imported rotation, then apply the saved pose on top. */
+function applyPose() {
+  for (const [name, q] of bindPose) bones[name].quaternion.fromArray(q);
+  for (const [name, q] of Object.entries(state.pose)) if (bones[name]) bones[name].quaternion.fromArray(q);
+}
+
+const _pa = new THREE.Vector3(), _pb = new THREE.Vector3();
+const _wq = new THREE.Quaternion(), _pq = new THREE.Quaternion();
+
+function worldRotate(bone, delta) {
+  actorRoot.updateMatrixWorld(true);
+  bone.getWorldQuaternion(_wq);
+  bone.parent.getWorldQuaternion(_pq);
+  bone.quaternion.copy(_pq.invert().multiply(delta.multiply(_wq)));
+}
+
+function boneAxis(bone, childName) {
+  const child = childName ? bones[childName] : bone.children.find((c) => c.isBone);
+  if (!child) throw new Error(`"${bone.name}" has no child bone to aim with; pass "child"`);
+  actorRoot.updateMatrixWorld(true);
+  bone.getWorldPosition(_pa);
+  child.getWorldPosition(_pb);
+  const axis = _pb.clone().sub(_pa);
+  if (axis.lengthSq() < 1e-12) throw new Error(`"${bone.name}" and "${child.name}" are at the same place`);
+  return axis.normalize();
+}
+
+function poseBone(op) {
+  const bone = bones[op.bone];
+  if (!bone) throw new Error(`No bone named "${op.bone}"`);
+  if (op.op === 'aim') {
+    const dir = new THREE.Vector3(...vec3In(op.direction, 'direction'));
+    if (dir.lengthSq() < 1e-12) throw new Error('direction must not be zero');
+    worldRotate(bone, new THREE.Quaternion().setFromUnitVectors(boneAxis(bone, op.child), dir.normalize()));
+  } else if (op.op === 'twist') {
+    worldRotate(bone, new THREE.Quaternion().setFromAxisAngle(boneAxis(bone, op.child), THREE.MathUtils.degToRad(numIn(op.degrees, 'degrees', -360, 360))));
+  } else if (op.op === 'rotate') {
+    const d = vec3In(op.degrees, 'degrees').map(THREE.MathUtils.degToRad);
+    bone.quaternion.multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(d[0], d[1], d[2], 'XYZ')));
+  } else {
+    throw new Error(`Unknown operation "${op.op}"`);
+  }
+  state.pose[bone.name] = bone.quaternion.toArray();
+}
+
+function numIn(v, name, lo = -Infinity, hi = Infinity) {
+  if (typeof v !== 'number' || !Number.isFinite(v)) throw new Error(`${name} must be a number`);
+  return clamp(v, lo, hi);
+}
+function vec3In(v, name) {
+  if (!Array.isArray(v) || v.length !== 3 || v.some((n) => typeof n !== 'number' || !Number.isFinite(n))) throw new Error(`${name} must be three numbers`);
+  return v;
+}
+
 // ------------------------------------------------------------------ scene look
 const NIGHT = new THREE.Color(0x0a0f1c), HORIZON = new THREE.Color(0xd98f5c), DAY = new THREE.Color(0x7fa9d6);
 const SUN_LOW = new THREE.Color(0xffa860), SUN_HIGH = new THREE.Color(0xfff4e6), MOON = new THREE.Color(0x9bb8ff);
@@ -118,13 +186,14 @@ function applyScene() {
   else if (e < 0.03) sky.copy(NIGHT).lerp(HORIZON, (e + 0.12) / 0.15);      // dusk and dawn glow
   else if (e < 0.22) sky.copy(HORIZON).lerp(DAY, (e - 0.03) / 0.19);
   else sky.copy(DAY);
-  const night = e <= 0;
+  const twilight = clamp(1 - Math.abs(e) / 0.14, 0, 1);       // soft light around sunrise and sunset
+  const night = e <= -0.12;
   const el = Math.asin(clamp(Math.abs(e), 0.08, 1));
   const az = THREE.MathUtils.degToRad(s.azimuth + (night ? 180 : 0));
   sun.position.set(Math.cos(el) * Math.sin(az), Math.sin(el), Math.cos(el) * Math.cos(az)).multiplyScalar(25);
   if (night) { sun.color.copy(MOON); sun.intensity = 1.1; }
-  else { sun.color.copy(SUN_LOW).lerp(SUN_HIGH, clamp(e * 1.6, 0, 1)); sun.intensity = 3.2 * Math.pow(e, 0.6); }
-  hemi.intensity = 0.3 + 0.6 * Math.max(0, e);
+  else { sun.color.copy(SUN_LOW).lerp(SUN_HIGH, clamp(e * 1.6, 0, 1)); sun.intensity = 3.2 * Math.pow(Math.max(e, 0), 0.6) + 0.9 * twilight; }
+  hemi.intensity = 0.3 + 0.6 * Math.max(0, e) + 0.35 * twilight;
   renderer.toneMappingExposure = s.exposure;
   scene.fog = s.fog > 0 ? new THREE.FogExp2(sky.getHex(), s.fog) : null;
   grid.visible = s.grid;
@@ -419,6 +488,7 @@ tracksEl.addEventListener('pointerdown', (e) => {
 function showTab(name) {
   document.querySelectorAll('.tabs button').forEach((b) => b.classList.toggle('active', b.dataset.tab === name));
   document.querySelectorAll('.panel').forEach((p) => p.classList.toggle('active', p.dataset.panel === name));
+  if (name === 'assistant') $('ai-log').scrollTop = $('ai-log').scrollHeight;      // show the newest message
 }
 document.querySelectorAll('.tabs button').forEach((b) => b.addEventListener('click', () => showTab(b.dataset.tab)));
 
@@ -523,7 +593,7 @@ function serialise() {
   return {
     app: 'cinematic', version: 1,
     duration: state.duration, fps: state.fps, time: state.time, loop: state.loop, autoKey: state.autoKey,
-    markers: state.markers, scene: state.scene,
+    markers: state.markers, scene: state.scene, pose: state.pose,
     camera: { keys: track.toJSON(), rest: { pos: shotCam.position.toArray(), quat: shotCam.quaternion.toArray(), fov: shotCam.fov } },
     actor: { name: actors[1].name, pos: actorRoot.position.toArray(), quat: actorRoot.quaternion.toArray() },
   };
@@ -534,8 +604,9 @@ function load(data) {
   const d = defaults();
   Object.assign(state, d, {
     duration: data.duration ?? d.duration, fps: data.fps ?? d.fps, time: 0, loop: !!data.loop, autoKey: !!data.autoKey,
-    markers: data.markers ?? [], scene: { ...d.scene, ...data.scene },
+    markers: data.markers ?? [], scene: { ...d.scene, ...data.scene }, pose: { ...(data.pose ?? {}) },
   });
+  applyPose();
   track = new CameraTrack(data.camera?.keys ?? []);
   selectedKey = null;
   if (data.camera?.rest) {
@@ -578,6 +649,7 @@ $('file-open').addEventListener('change', async (e) => {
 $('btn-new').addEventListener('click', () => {
   if (!window.confirm('Start a new project? Unsaved changes will be lost.')) return;
   Object.assign(state, defaults());
+  applyPose();
   track = new CameraTrack();
   selectedKey = null;
   actorRoot.position.set(0, 0, 0); actorRoot.quaternion.identity();
@@ -588,16 +660,21 @@ $('btn-new').addEventListener('click', () => {
 
 // ------------------------------------------------------------------ model import (files stay on this computer)
 $('btn-import').addEventListener('click', () => $('file-import').click());
-$('file-import').addEventListener('change', async (e) => {
+$('file-import').addEventListener('change', (e) => {
   const files = [...e.target.files];
   e.target.value = '';
+  importFiles(files);
+});
+
+async function importFiles(files) {
   const main = files.find((f) => /\.(glb|gltf)$/i.test(f.name));
   if (!main) { setStatus('No .glb or .gltf file in that folder'); return; }
   const urls = new Map(files.map((f) => [f.name.toLowerCase(), URL.createObjectURL(f)]));
   const manager = new THREE.LoadingManager();
   let missing = 0;
   manager.setURLModifier((url) => {
-    if (/^(blob|data):/.test(url) && !url.includes('/textures/')) return url;
+    if (url.startsWith('data:')) return url;
+    // Textures are referenced by relative path; match them to the picked files by file name.
     const name = decodeURIComponent(url.split('/').pop().split('?')[0]).toLowerCase();
     return urls.get(name) || url;
   });
@@ -619,13 +696,258 @@ $('file-import').addEventListener('change', async (e) => {
     });
     actorRoot.clear();
     actorRoot.add(gltf.scene);
+    collectBones();
+    applyPose();
     actors[1].name = main.name.replace(/\.(glb|gltf)$/i, '');
     rebuildActors();
     setStatus(missing ? `Loaded ${main.name} · ${missing} texture(s) not found in the folder` : `Loaded ${main.name}`);
   } catch (err) {
     setStatus(`Could not load ${main.name}: ${err.message}`);
   }
+}
+
+// ------------------------------------------------------------------ assistant tools
+const round3 = (v) => +v.toFixed(3);
+const scratchCam = new THREE.PerspectiveCamera(40, SHOT_ASPECT, 0.05, 800);
+
+function poseCamera(cam, input) {
+  cam.position.fromArray(vec3In(input.position, 'position'));
+  cam.lookAt(...vec3In(input.look_at, 'look_at'));
+  if (input.roll_deg !== undefined) {
+    euler.setFromQuaternion(cam.quaternion, 'YXZ');
+    euler.z = THREE.MathUtils.degToRad(numIn(input.roll_deg, 'roll_deg', -45, 45));
+    cam.quaternion.setFromEuler(euler);
+  }
+  if (input.focal_mm !== undefined) cam.fov = fovFromFocal(numIn(input.focal_mm, 'focal_mm', 12, 200));
+  cam.updateProjectionMatrix();
+}
+
+/** Render a small JPEG through any camera, for the assistant to look at. Returns base64. */
+function captureJpeg(cam, width = 768, height = 432) {
+  const aspect = cam.aspect;
+  renderer.setPixelRatio(1);
+  renderer.setSize(width, height, false);
+  renderer.setScissorTest(false);
+  cam.aspect = width / height;
+  cam.updateProjectionMatrix();
+  setOverlays(false);
+  renderer.setViewport(0, 0, width, height);
+  renderer.render(scene, cam);
+  const data = canvas.toDataURL('image/jpeg', 0.85).split(',')[1];
+  setOverlays(true);
+  cam.aspect = aspect;
+  cam.updateProjectionMatrix();
+  resize();
+  draw();
+  return data;
+}
+
+function sceneSummary() {
+  const boneCount = Object.keys(bones).length;
+  const box = new THREE.Box3().setFromObject(actorRoot);
+  const toward = new THREE.Vector3(0, 0, -1).applyQuaternion(shotCam.quaternion);
+  return {
+    time: round3(state.time), duration: state.duration, fps: state.fps,
+    camera: {
+      position: shotCam.position.toArray().map(round3),
+      looking_toward: toward.toArray().map(round3),
+      focal_mm: Math.round(focalFromFov(shotCam.fov)),
+      roll_deg: round3(THREE.MathUtils.radToDeg(euler.setFromQuaternion(shotCam.quaternion, 'YXZ').z)),
+      moved_but_not_keyed: camDirty,
+      keys: track.keys.map((k) => ({ time: k.t, position: k.pos.map(round3), focal_mm: Math.round(focalFromFov(k.fov)), ease: k.ease })),
+    },
+    scene: { time_of_day: state.scene.tod, sun_heading: state.scene.azimuth, exposure: state.scene.exposure, fog: state.scene.fog },
+    actor: {
+      name: actors[1].name,
+      position: actorRoot.position.toArray().map(round3),
+      heading_deg: round3(THREE.MathUtils.radToDeg(actorRoot.rotation.y)),
+      has_skeleton: boneCount > 0, bone_count: boneCount, posed_bones: Object.keys(state.pose).length,
+      bounds: { min: box.min.toArray().map(round3), max: box.max.toArray().map(round3) },
+    },
+    markers: state.markers,
+  };
+}
+
+const toolHandlers = {
+  get_scene: () => JSON.stringify(sceneSummary()),
+  set_time: (i) => { setTime(numIn(i.seconds, 'seconds')); return `Playhead at ${state.time}s`; },
+  set_timeline: (i) => {
+    if (i.duration !== undefined) state.duration = numIn(i.duration, 'duration', 1, 600);
+    if (i.fps !== undefined) { if (![24, 30, 60, 120].includes(i.fps)) throw new Error('fps must be 24, 30, 60 or 120'); state.fps = i.fps; }
+    setTime(state.time); syncKeyUI(); resize();
+    return `Timeline is ${state.duration}s at ${state.fps} fps`;
+  },
+  set_camera: (i) => {
+    poseCamera(shotCam, i);
+    if (i.key) setKeyNow(); else camDirty = track.keys.length > 0;
+    return i.key ? `Camera placed and keyed at ${state.time}s` : 'Camera placed (not keyed)';
+  },
+  set_camera_keys: (i) => {
+    if (!Array.isArray(i.keys) || !i.keys.length) throw new Error('keys must be a non-empty list');
+    if (i.replace) track = new CameraTrack();
+    scratchCam.fov = shotCam.fov;
+    for (const k of i.keys) {
+      const t = clamp(snap(numIn(k.time, 'time')), 0, state.duration);
+      poseCamera(scratchCam, k);
+      const key = track.setKey(t, scratchCam);
+      if (k.ease !== undefined) { if (!EASE_MODES.includes(k.ease)) throw new Error(`Unknown ease "${k.ease}"`); key.ease = k.ease; }
+    }
+    selectedKey = null; camDirty = false;
+    keysChanged();
+    return `Camera now has ${track.keys.length} key(s) at ${track.keys.map((k) => `${k.t}s`).join(', ')}`;
+  },
+  delete_camera_keys: (i) => {
+    let removed = 0;
+    if (i.times === undefined) { removed = track.keys.length; track = new CameraTrack(); }
+    else for (const t of i.times) { const k = track.keyAt(snap(numIn(t, 'time'))); if (k && track.removeKey(k)) removed++; }
+    selectedKey = null;
+    keysChanged();
+    return `Removed ${removed} key(s); ${track.keys.length} left`;
+  },
+  set_scene: (i) => {
+    const s = state.scene;
+    if (i.time_of_day !== undefined) s.tod = numIn(i.time_of_day, 'time_of_day', 0, 24);
+    if (i.sun_heading !== undefined) s.azimuth = ((numIn(i.sun_heading, 'sun_heading') % 360) + 360) % 360;
+    if (i.exposure !== undefined) s.exposure = numIn(i.exposure, 'exposure', 0.2, 3);
+    if (i.fog !== undefined) s.fog = numIn(i.fog, 'fog', 0, 0.15);
+    applyScene();
+    return JSON.stringify({ time_of_day: s.tod, sun_heading: s.azimuth, exposure: s.exposure, fog: s.fog });
+  },
+  move_actor: (i) => {
+    if (i.position !== undefined) actorRoot.position.fromArray(vec3In(i.position, 'position'));
+    if (i.heading_deg !== undefined) actorRoot.rotation.set(0, THREE.MathUtils.degToRad(numIn(i.heading_deg, 'heading_deg')), 0);
+    return `Actor at ${actorRoot.position.toArray().map(round3).join(', ')}`;
+  },
+  add_markers: (i) => {
+    if (!Array.isArray(i.markers)) throw new Error('markers must be a list');
+    for (const m of i.markers) {
+      const t = clamp(snap(numIn(m.time, 'time')), 0, state.duration);
+      if (!state.markers.some((x) => Math.abs(x.t - t) < 1e-4)) state.markers.push({ t, label: String(m.label).slice(0, 40) });
+    }
+    state.markers.sort((a, b) => a.t - b.t);
+    rebuildMarkers();
+    return `${state.markers.length} marker(s) on the timeline`;
+  },
+  list_bones: () => {
+    const names = Object.keys(bones);
+    if (!names.length) throw new Error('The actor has no skeleton. Import a rigged model to pose it.');
+    actorRoot.updateMatrixWorld(true);
+    return JSON.stringify(names.map((n) => {
+      const b = bones[n];
+      return { name: n, parent: b.parent?.isBone ? b.parent.name : null, position: b.getWorldPosition(_pa).toArray().map(round3) };
+    }));
+  },
+  pose_bones: (i) => {
+    if (!Object.keys(bones).length) throw new Error('The actor has no skeleton. Import a rigged model to pose it.');
+    if (!Array.isArray(i.operations) || !i.operations.length) throw new Error('operations must be a non-empty list');
+    i.operations.forEach((op, n) => { try { poseBone(op); } catch (err) { throw new Error(`Operation ${n + 1} (${op?.bone}): ${err.message}. Earlier operations were applied.`); } });
+    return `Applied ${i.operations.length} operation(s)`;
+  },
+  reset_pose: (i) => {
+    if (i.bones === undefined) state.pose = {};
+    else for (const n of i.bones) delete state.pose[n];
+    applyPose();
+    return `${Object.keys(state.pose).length} bone(s) still posed`;
+  },
+  capture_view: (i) => {
+    let cam = shotCam, label = `Shot camera at ${state.time}s`;
+    if (i.view === 'custom') {
+      cam = scratchCam;
+      cam.fov = 40;
+      poseCamera(cam, { position: vec3In(i.from, 'from'), look_at: vec3In(i.at, 'at') });
+      label = `Custom view from ${i.from.join(', ')}`;
+    } else {
+      applyTrack();
+    }
+    return [
+      { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: captureJpeg(cam) } },
+      { type: 'text', text: label },
+    ];
+  },
+};
+
+async function execTool(name, input) {
+  const handler = toolHandlers[name];
+  if (!handler) throw new Error(`Unknown tool "${name}"`);
+  const result = handler(input ?? {});
+  scheduleAutosave();
+  return result;
+}
+
+// ------------------------------------------------------------------ assistant panel
+const AI_KEY_STORE = 'cinematic.apikey.v1';
+const TOOL_LABELS = {
+  get_scene: 'Reading the scene', set_time: 'Moving the playhead', set_timeline: 'Changing the timeline',
+  set_camera: 'Placing the camera', set_camera_keys: 'Keying the camera', delete_camera_keys: 'Deleting camera keys',
+  set_scene: 'Adjusting sky and light', move_actor: 'Moving the actor', add_markers: 'Adding markers',
+  list_bones: 'Reading the skeleton', pose_bones: 'Posing bones', reset_pose: 'Resetting the pose', capture_view: 'Looking at the result',
+};
+const aiMessages = [];
+let aiAbort = null, aiUndo = null, aiClientOverride = null;
+
+function aiKey() { try { return localStorage.getItem(AI_KEY_STORE) || ''; } catch { return ''; } }
+function aiLog(kind, text) {
+  const d = document.createElement('div');
+  d.className = `ai-msg ${kind}`;
+  d.textContent = text;
+  $('ai-log').append(d);
+  $('ai-log').scrollTop = $('ai-log').scrollHeight;
+}
+function syncAi() {
+  const busy = !!aiAbort;
+  $('ai-send').disabled = busy;
+  $('ai-stop').disabled = !busy;
+  $('ai-undo').disabled = busy || !aiUndo;
+  $('ai-key-state').textContent = aiKey() ? 'A key is saved on this computer.' : 'No key saved yet.';
+}
+
+async function aiSend(text) {
+  text = text.trim();
+  if (!text || aiAbort) return;
+  const client = aiClientOverride || (aiKey() ? createClient(aiKey()) : null);
+  if (!client) { aiLog('notice', 'Add your Anthropic API key above first.'); return; }
+  aiLog('user', text);
+  const startLength = aiMessages.length;
+  aiUndo = JSON.stringify(serialise());
+  aiMessages.push({ role: 'user', content: text });
+  aiAbort = new AbortController();
+  syncAi();
+  try {
+    await runTurn({
+      client, messages: aiMessages, execute: execTool, signal: aiAbort.signal,
+      onEvent: (e) => aiLog(e.type === 'tool' ? 'tool' : e.type === 'text' ? 'reply' : 'notice', e.type === 'tool' ? `${TOOL_LABELS[e.name] || e.name}…` : e.text),
+    });
+  } catch (err) {
+    aiMessages.length = startLength;          // drop the unfinished exchange so the next request starts clean
+    aiLog('notice', describeError(err));
+  } finally {
+    aiAbort = null;
+    syncAi();
+    scheduleAutosave();
+  }
+}
+
+$('ai-send').addEventListener('click', () => { const t = $('ai-input').value; $('ai-input').value = ''; aiSend(t); });
+$('ai-input').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); $('ai-send').click(); }
 });
+$('ai-stop').addEventListener('click', () => aiAbort?.abort());
+$('ai-undo').addEventListener('click', () => {
+  if (!aiUndo) return;
+  load(JSON.parse(aiUndo));
+  aiUndo = null;
+  aiLog('notice', "Undid the assistant's last set of changes.");
+  syncAi();
+});
+$('ai-key-save').addEventListener('click', () => {
+  const v = $('ai-key').value.trim();
+  try { if (v) localStorage.setItem(AI_KEY_STORE, v); else localStorage.removeItem(AI_KEY_STORE); }
+  catch { aiLog('notice', 'This browser would not store the key.'); }
+  $('ai-key').value = '';
+  syncAi();
+});
+$('ai-model').textContent = MODEL;
+syncAi();
 
 // ------------------------------------------------------------------ loop
 const clock = new THREE.Clock();
@@ -661,4 +983,8 @@ syncPlayButton();
 tick();
 
 // Handle for automated checks and for poking at things from the console.
-window.app = { state, get track() { return track; }, shotCam, freeCam, actorRoot, setTime, setMode, setKeyNow, selectActor, renderStill, serialise, load };
+window.app = {
+  state, get track() { return track; }, get bones() { return bones; }, shotCam, freeCam, actorRoot,
+  setTime, setMode, setKeyNow, selectActor, renderStill, serialise, load, importFiles, execTool,
+  assistant: { send: aiSend, messages: aiMessages, useClient(c) { aiClientOverride = c; } },
+};

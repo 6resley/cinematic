@@ -35,9 +35,18 @@ Then open the address it prints (normally http://127.0.0.1:5173).
 
 Until you import a model, a plain stand-in figure marks where the character goes.
 
+## The assistant
+
+The **Assistant** tab lets you describe what you want in plain words ("slow push-in on the face over 4 seconds, at dusk", "raise his right arm and curl the fingers") and have it done for you. It works by operating the editor's own controls: reading the scene, keying the camera, setting sky and light, moving the actor, posing bones on an imported rigged model, and taking pictures of the result to check its work.
+
+- It runs on Claude through the Anthropic API, so it needs your own API key. Open **API key** in the tab, paste it and press Save.
+- The key is stored only in your browser on your computer and is sent only to Anthropic. It is never written into project files.
+- Each request uses API credit on your account.
+- **Undo assistant changes** puts the project back to how it was before its last request.
+
 ## Not built yet
 
-Render queue for whole shots, animation clips and layered bone overrides, asset library, weapons and camos, weather, look presets, depth of field and motion blur, undo/redo, and a packaged desktop build.
+Render queue for whole shots, animation clips and keyframed bone poses (poses are static for now), asset library, weapons and camos, weather, look presets, depth of field and motion blur, undo/redo, and a packaged desktop build.
 
 ## Development
 
