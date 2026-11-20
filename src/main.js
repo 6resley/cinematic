@@ -6,6 +6,7 @@ import { CameraTrack, EASE_MODES } from './keys.js';
 import { FlyLook } from './flylook.js';
 import { toLocal, toWorld, reframeKeys, bodyAxes } from './mount.js';
 import { Clip } from './anim.js';
+import { decodeDDS, gameNormalToStandard, gameSpecToRoughness } from './dds.js';
 import { createClient, runTurn, describeError, MODEL } from './assistant.js';
 
 const $ = (id) => document.getElementById(id);
@@ -22,6 +23,7 @@ const defaults = () => ({
   duration: 10, fps: 60, time: 0, loop: false, autoKey: false,
   markers: [],
   mount: { bone: null, lookAt: null, level: false, roll: 0 },   // what the shot camera rides on
+  props: [],                                  // settings for attached props, by name: { name, bone, hidden }
   anim: { name: null, start: 0, speed: 1, loop: true },   // which imported animation plays on the actor
   pose: {},                                   // bone name -> rotation offset layered on top of the animation (or the imported pose)
   scene: { tod: 15, azimuth: 60, exposure: 1, fog: 0, grid: true },
@@ -735,7 +737,7 @@ function serialise() {
   return {
     app: 'cinematic', version: 2,
     duration: state.duration, fps: state.fps, time: state.time, loop: state.loop, autoKey: state.autoKey,
-    markers: state.markers, scene: state.scene, pose: state.pose, mount: state.mount, anim: state.anim,
+    markers: state.markers, scene: state.scene, pose: state.pose, mount: state.mount, anim: state.anim, props: state.props,
     camera: { keys: track.toJSON(), rest: { pos: camLocal.position.toArray(), quat: camLocal.quaternion.toArray(), fov: shotCam.fov } },
     actor: { name: actors[1].name, pos: actorRoot.position.toArray(), quat: actorRoot.quaternion.toArray() },
   };
@@ -747,6 +749,7 @@ function load(data) {
   Object.assign(state, d, {
     duration: data.duration ?? d.duration, fps: data.fps ?? d.fps, time: 0, loop: !!data.loop, autoKey: !!data.autoKey,
     markers: data.markers ?? [], scene: { ...d.scene, ...data.scene }, pose: (data.version ?? 1) >= 2 ? { ...(data.pose ?? {}) } : {}, mount: { ...d.mount, ...data.mount }, anim: { ...d.anim, ...data.anim },
+    props: Array.isArray(data.props) ? data.props.map((p) => ({ name: p.name, bone: p.bone ?? null, hidden: [...(p.hidden ?? [])] })) : [],
   });
   legacyPose = (data.version ?? 1) < 2 && data.pose && Object.keys(data.pose).length ? data.pose : null;
   if (legacyPose && bindPose.size) collectBones();
@@ -762,6 +765,14 @@ function load(data) {
   syncMountUI();
   if (data.actor) { actorRoot.position.fromArray(data.actor.pos); actorRoot.quaternion.fromArray(data.actor.quat); }
   syncAnimUI();
+  for (const prop of props) {                          // apply saved settings to props that are loaded in this session
+    const saved = state.props.find((p) => p.name === prop.name);
+    if (!saved) continue;
+    prop.hidden = new Set(saved.hidden);
+    placeProp(prop, saved.bone);
+    applyPropParts(prop);
+  }
+  syncPropsUI();
   applyScene();
   setTime(data.time ?? 0);
   keysChanged();
@@ -812,9 +823,87 @@ $('file-import').addEventListener('change', (e) => {
   importFiles(files);
 });
 
-async function importFiles(files) {
-  const main = files.find((f) => /\.(glb|gltf)$/i.test(f.name));
-  if (!main) { setStatus('No .glb or .gltf file in that folder'); return; }
+/** Ask which of several models in a folder to load. Resolves to the chosen name, or null if cancelled. */
+function chooseModel(names) {
+  return new Promise((resolve) => {
+    const dialog = $('chooser'), list = $('chooser-list');
+    list.replaceChildren(...names.map((n) => {
+      const b = document.createElement('button');
+      b.textContent = n;
+      b.addEventListener('click', () => { dialog.close(); resolve(n); });
+      return b;
+    }));
+    dialog.addEventListener('close', () => resolve(null), { once: true });
+    dialog.showModal();
+  });
+}
+
+function dataTexture(image, srgb) {
+  const t = new THREE.DataTexture(image.data, image.width, image.height, THREE.RGBAFormat);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.generateMipmaps = true;
+  t.minFilter = THREE.LinearMipmapLinearFilter;
+  t.magFilter = THREE.LinearFilter;
+  t.anisotropy = 8;
+  if (srgb) t.colorSpace = THREE.SRGBColorSpace;
+  t.needsUpdate = true;
+  return t;
+}
+
+/**
+ * Wire up textures for a model straight from the ripper's output: <model>_textures.txt says which image each
+ * material uses, and the images are .dds files anywhere in the picked folder. Returns how many maps were set.
+ */
+async function bindRippedTextures(root, modelName, files) {
+  const listFile = files.find((f) => f.name.toLowerCase() === `${modelName.toLowerCase()}_textures.txt`);
+  if (!listFile) return 0;
+  const byName = new Map(files.map((f) => [f.name.toLowerCase(), f]));
+  const wanted = {};                                    // material name -> { 2: colour, 5: normal, 8: specular }
+  for (const line of (await listFile.text()).split(/\r?\n/)) {
+    const part = line.split('\t');
+    if (part.length !== 3) continue;
+    (wanted[part[0]] ||= {})[Number(part[1].split('=')[1])] = part[2].replace(/^images\//, '').replace(/\.iwi$/i, '');
+  }
+  const made = new Map();
+  const texture = async (image, kind) => {
+    const key = `${kind}:${image}`;
+    if (made.has(key)) return made.get(key);
+    let out = null;
+    const file = byName.get(`${image.toLowerCase()}.dds`);
+    if (file) {
+      try {
+        const pixels = decodeDDS(new Uint8Array(await file.arrayBuffer()));
+        if (kind === 'normal') gameNormalToStandard(pixels);
+        if (kind === 'rough') gameSpecToRoughness(pixels);
+        out = dataTexture(pixels, kind === 'colour');
+      } catch { out = null; }
+    }
+    made.set(key, out);
+    return out;
+  };
+  const meshes = [];
+  root.traverse((o) => { if (o.isMesh) meshes.push(o); });
+  let bound = 0;
+  for (const mesh of meshes) {
+    const m = mesh.material, w = wanted[m.name];
+    if (!w) continue;
+    if (!m.map && w[2]) { const t = await texture(w[2], 'colour'); if (t) { m.map = t; m.color.set(0xffffff); bound++; } }
+    if (!m.normalMap && w[5]) { const t = await texture(w[5], 'normal'); if (t) { m.normalMap = t; bound++; } }
+    if (!m.roughnessMap && w[8]) { const t = await texture(w[8], 'rough'); if (t) { m.roughnessMap = t; m.roughness = 1; bound++; } }
+    m.needsUpdate = true;
+  }
+  return bound;
+}
+
+/** Load one model from a picked folder. Returns { scene, name, note } or null if nothing was loaded. */
+async function loadModelFolder(files, preferName) {
+  const models = files.filter((f) => /\.(glb|gltf)$/i.test(f.name)).sort((a, b) => a.name.localeCompare(b.name));
+  if (!models.length) { setStatus('No .glb or .gltf file in that folder'); return null; }
+  const base = (f) => f.name.replace(/\.(glb|gltf)$/i, '');
+  let main = models[0];
+  if (preferName) main = models.find((f) => base(f) === preferName) || null;
+  else if (models.length > 1) { const picked = await chooseModel(models.map(base)); main = picked ? models.find((f) => base(f) === picked) : null; }
+  if (!main) { setStatus(preferName ? `No model named ${preferName} in that folder` : 'Nothing chosen'); return null; }
   const urls = new Map(files.map((f) => [f.name.toLowerCase(), URL.createObjectURL(f)]));
   const manager = new THREE.LoadingManager();
   let missing = 0;
@@ -828,6 +917,7 @@ async function importFiles(files) {
   setStatus(`Loading ${main.name}…`);
   try {
     const gltf = await new GLTFLoader(manager).loadAsync(urls.get(main.name.toLowerCase()));
+    const bound = await bindRippedTextures(gltf.scene, base(main), files);
     gltf.scene.traverse((o) => {
       if (!o.isMesh) return;
       o.castShadow = o.receiveShadow = true;
@@ -840,17 +930,150 @@ async function importFiles(files) {
         Object.assign(m, { alphaToCoverage: true, side: THREE.DoubleSide, shadowSide: THREE.DoubleSide });
       }
     });
-    actorRoot.clear();
-    actorRoot.add(gltf.scene);
-    collectBones();
-    applyPose();
-    syncMountUI();
-    actors[1].name = main.name.replace(/\.(glb|gltf)$/i, '');
-    rebuildActors();
-    setStatus(missing ? `Loaded ${main.name} · ${missing} texture(s) not found in the folder` : `Loaded ${main.name}`);
+    const note = (bound ? ` · ${bound} texture map(s) wired from the ripper's list` : '') + (missing ? ` · ${missing} texture(s) not found in the folder` : '');
+    return { scene: gltf.scene, name: base(main), note };
   } catch (err) {
     setStatus(`Could not load ${main.name}: ${err.message}`);
+    return null;
   }
+}
+
+async function importFiles(files, preferName) {
+  const loaded = await loadModelFolder(files, preferName);
+  if (!loaded) return;
+  for (const prop of props) placeProp(prop, null);       // props ride on bones that are about to be replaced
+  actorRoot.clear();
+  actorRoot.add(loaded.scene);
+  collectBones();
+  applyPose();
+  for (const prop of props) placeProp(prop, prop.bone);
+  syncMountUI();
+  syncPropsUI();
+  actors[1].name = loaded.name;
+  rebuildActors();
+  setStatus(`Loaded ${loaded.name}${loaded.note}`);
+}
+
+// ------------------------------------------------------------------ props (a weapon in the hand, anything attached to a bone)
+const props = [];
+const propWorld = new THREE.Group();                     // where unattached props and all prop meshes live
+scene.add(propWorld);
+const HIDDEN_BY_DEFAULT = /acog|thermal|suppress|silenc|motion_tracker|heartbeat|laser|reflex|eotech|holo|grenad|shotgun|foregrip|_grip|tactical|akimbo|fmj|xmag/i;
+const PREFERRED_PROP_BONES = ['tag_weapon_right', 'j_gun', 'tag_weapon', 'j_wrist_ri'];
+
+$('btn-import-prop').addEventListener('click', () => $('file-prop').click());
+$('file-prop').addEventListener('change', (e) => {
+  const files = [...e.target.files];
+  e.target.value = '';
+  importProp(files);
+});
+
+async function importProp(files, preferName) {
+  const loaded = await loadModelFolder(files, preferName);
+  if (!loaded) return null;
+  const old = props.find((p) => p.name === loaded.name);
+  if (old) removeProp(old);
+  // The file's top node converts the game's units and axes to the scene's. Its children are the model itself in the
+  // game's own space, which is also the space of the bone it attaches to, so they can ride a bone with no offset.
+  const holder = loaded.scene.children.find((c) => !c.isMesh) || loaded.scene;
+  const carrier = new THREE.Group();
+  const unit = new THREE.Group();
+  unit.quaternion.copy(holder.quaternion);
+  unit.scale.copy(holder.scale);
+  for (const child of [...holder.children]) carrier.add(child);
+  const skinned = new THREE.Group();
+  for (const child of [...loaded.scene.children]) if (child !== holder) skinned.add(child);
+  propWorld.add(unit, skinned);
+  const prop = { name: loaded.name, bone: null, carrier, unit, skinned, parts: new Map(), hidden: new Set() };
+  for (const root of [carrier, skinned]) root.traverse((o) => {
+    if (!o.isMesh) return;
+    const key = o.material.name || 'unnamed';
+    if (!prop.parts.has(key)) prop.parts.set(key, []);
+    prop.parts.get(key).push(o);
+  });
+  const saved = state.props.find((p) => p.name === prop.name);
+  for (const part of prop.parts.keys()) if (saved ? saved.hidden.includes(part) : HIDDEN_BY_DEFAULT.test(part)) prop.hidden.add(part);
+  props.push(prop);
+  placeProp(prop, saved ? saved.bone : PREFERRED_PROP_BONES.find((b) => bones[b]) || null);
+  applyPropParts(prop);
+  storeProps();
+  syncPropsUI();
+  setStatus(`Added ${prop.name}${prop.bone ? ` on ${prop.bone}` : ' (not attached: import a rigged character first)'}${loaded.note}`);
+  return prop;
+}
+
+/** Attach a prop to one of the actor's bones, or leave it free in the scene when bone is null. */
+function placeProp(prop, bone) {
+  prop.bone = bone && bones[bone] ? bone : null;
+  (prop.bone ? bones[prop.bone] : prop.unit).add(prop.carrier);
+}
+
+function applyPropParts(prop) {
+  for (const [part, meshes] of prop.parts) for (const mesh of meshes) mesh.visible = !prop.hidden.has(part);
+}
+
+function removeProp(prop) {
+  prop.carrier.removeFromParent();
+  propWorld.remove(prop.unit, prop.skinned);
+  props.splice(props.indexOf(prop), 1);
+  storeProps();
+  syncPropsUI();
+}
+
+function storeProps() {
+  const loaded = props.map((p) => ({ name: p.name, bone: p.bone, hidden: [...p.hidden] }));
+  const others = state.props.filter((s) => !props.some((p) => p.name === s.name));      // keep settings for props not loaded right now
+  state.props = [...loaded, ...others];
+  scheduleAutosave();
+}
+
+function syncPropsUI() {
+  const host = $('props-list'), names = Object.keys(bones).sort();
+  host.replaceChildren(...props.map((prop) => {
+    const box = document.createElement('div');
+    box.className = 'prop';
+    const head = document.createElement('div');
+    head.className = 'prop-head';
+    const title = document.createElement('strong');
+    title.textContent = prop.name;
+    const remove = document.createElement('button');
+    remove.textContent = 'Remove';
+    remove.addEventListener('click', () => removeProp(prop));
+    head.append(title, remove);
+    const row = document.createElement('label');
+    row.className = 'row';
+    const span = document.createElement('span');
+    span.textContent = 'Attached to';
+    const sel = document.createElement('select');
+    sel.replaceChildren(new Option('Nothing (free in the scene)', ''), ...names.map((n) => new Option(n, n)));
+    sel.value = prop.bone || '';
+    sel.addEventListener('change', () => { placeProp(prop, sel.value || null); storeProps(); });
+    row.append(span, sel);
+    const parts = document.createElement('div');
+    parts.className = 'prop-parts';
+    for (const part of [...prop.parts.keys()].sort()) {
+      const label = document.createElement('label');
+      label.className = 'row check';
+      const box2 = document.createElement('input');
+      box2.type = 'checkbox';
+      box2.checked = !prop.hidden.has(part);
+      box2.addEventListener('change', () => {
+        if (box2.checked) prop.hidden.delete(part); else prop.hidden.add(part);
+        applyPropParts(prop);
+        storeProps();
+      });
+      const text = document.createElement('span');
+      text.textContent = part.split('/').pop().replace(/^mtl_/, '').replace(/_/g, ' ');
+      label.append(box2, text);
+      parts.append(label);
+    }
+    box.append(head, row, parts);
+    return box;
+  }));
+  const waiting = state.props.filter((s) => !props.some((p) => p.name === s.name)).map((s) => s.name);
+  $('props-info').textContent = props.length || waiting.length
+    ? (waiting.length ? `Not loaded in this session: ${waiting.join(', ')}. Import them again to see them.` : '')
+    : 'Nothing attached. Use Import prop to add a weapon or other model.';
 }
 
 // ------------------------------------------------------------------ animations
@@ -999,6 +1222,7 @@ function sceneSummary() {
       bounds: { min: box.min.toArray().map(round3), max: box.max.toArray().map(round3) },
     },
     animation: { ...state.anim, loaded: !!activeClip(), imported_count: clipLibrary.size },
+    props: props.map((p) => ({ name: p.name, attached_to: p.bone, parts: [...p.parts.keys()].map((k) => ({ part: k, shown: !p.hidden.has(k) })) })),
     markers: state.markers,
   };
 }
@@ -1074,6 +1298,24 @@ const toolHandlers = {
     setAnimation(next);
     return JSON.stringify(state.anim);
   },
+  set_prop: (i) => {
+    const prop = props.find((p) => p.name === i.name);
+    if (!prop) throw new Error(`No prop named "${i.name}" is loaded. Loaded props: ${props.map((p) => p.name).join(', ') || 'none'}`);
+    if (i.bone !== undefined) {
+      if (i.bone && !bones[i.bone]) throw new Error(`No bone named "${i.bone}"`);
+      placeProp(prop, i.bone || null);
+    }
+    for (const [list, hide] of [[i.show, false], [i.hide, true]]) {
+      for (const part of list ?? []) {
+        if (!prop.parts.has(part)) throw new Error(`"${prop.name}" has no part "${part}"`);
+        if (hide) prop.hidden.add(part); else prop.hidden.delete(part);
+      }
+    }
+    applyPropParts(prop);
+    storeProps();
+    syncPropsUI();
+    return JSON.stringify({ name: prop.name, attached_to: prop.bone, hidden: [...prop.hidden] });
+  },
   move_actor: (i) => {
     if (i.position !== undefined) actorRoot.position.fromArray(vec3In(i.position, 'position'));
     if (i.heading_deg !== undefined) actorRoot.rotation.set(0, THREE.MathUtils.degToRad(numIn(i.heading_deg, 'heading_deg')), 0);
@@ -1142,7 +1384,7 @@ const AI_KEY_STORE = 'cinematic.apikey.v1';
 const TOOL_LABELS = {
   get_scene: 'Reading the scene', set_time: 'Moving the playhead', set_timeline: 'Changing the timeline',
   set_camera: 'Placing the camera', set_camera_keys: 'Keying the camera', delete_camera_keys: 'Deleting camera keys',
-  set_scene: 'Adjusting sky and light', list_animations: 'Checking the animations', set_animation: 'Setting the animation', mount_camera: 'Mounting the camera', move_actor: 'Moving the actor', add_markers: 'Adding markers',
+  set_scene: 'Adjusting sky and light', list_animations: 'Checking the animations', set_prop: 'Adjusting a prop', set_animation: 'Setting the animation', mount_camera: 'Mounting the camera', move_actor: 'Moving the actor', add_markers: 'Adding markers',
   list_bones: 'Reading the skeleton', pose_bones: 'Posing bones', reset_pose: 'Resetting the pose', capture_view: 'Looking at the result',
 };
 const aiMessages = [];
@@ -1241,6 +1483,7 @@ applyScene();
 rebuildActors();
 syncMountUI();
 syncAnimUI();
+syncPropsUI();
 setMode('free');
 keysChanged();
 resize();
@@ -1250,6 +1493,6 @@ tick();
 // Handle for automated checks and for poking at things from the console.
 window.app = {
   state, get track() { return track; }, get bones() { return bones; }, shotCam, freeCam, actorRoot,
-  setTime, setMode, setKeyNow, setMount, applyMountPreset, selectActor, renderStill, serialise, load, importFiles, importAnimations, setAnimation, execTool,
+  setTime, setMode, setKeyNow, setMount, applyMountPreset, selectActor, renderStill, serialise, load, importFiles, importProp, get props() { return props; }, importAnimations, setAnimation, execTool,
   assistant: { send: aiSend, messages: aiMessages, useClient(c) { aiClientOverride = c; } },
 };

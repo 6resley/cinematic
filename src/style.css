@@ -123,3 +123,15 @@ kbd { background: var(--panel-2); border: 1px solid var(--line); border-radius: 
 .tl-clip-tick { position: absolute; top: 5px; height: 18px; width: 1px; background: #cfe3f1; opacity: 0.7; pointer-events: none; }
 #timeline { min-height: 0; }
 .row input[type="number"] { width: 100%; }
+
+/* props and the model chooser */
+.prop { border: 1px solid var(--line); border-radius: var(--radius); padding: 8px; margin-bottom: 8px; }
+.prop-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 8px; }
+.prop-head strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.prop-parts .row.check { margin-bottom: 4px; }
+#props-list:empty { display: none; }
+dialog#chooser { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 16px; min-width: 320px; max-height: 80vh; }
+dialog#chooser::backdrop { background: #000a; }
+#chooser-list { display: flex; flex-direction: column; gap: 4px; margin-bottom: 12px; max-height: 55vh; overflow: auto; }
+#chooser-list button { text-align: left; }
+#topbar { gap: 10px; }

@@ -121,6 +121,20 @@ export const TOOLS = [
     },
   },
   {
+    name: 'set_prop',
+    description: 'Change a prop the person has imported, such as a weapon: attach it to a bone of the actor (or null to leave it free), and show or hide its parts. A weapon model contains every attachment at once (scopes, suppressor and so on), so hide the ones that should not be on the gun. get_scene lists the loaded props and their parts.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string' },
+        bone: { type: ['string', 'null'] },
+        show: { type: 'array', items: { type: 'string' }, description: 'Part names to show.' },
+        hide: { type: 'array', items: { type: 'string' }, description: 'Part names to hide.' },
+      },
+      required: ['name'],
+    },
+  },
+  {
     name: 'mount_camera',
     description: 'Mount the shot camera on a bone so it rides with the character, or change how it is mounted. Presets place it for you: gun (on the weapon hand, wide lens, aimed at the face), helmet (at the eyes), shoulder (behind the right shoulder), boot (low by the right foot, aimed at the face). preset "none" unmounts it. The camera does not jump when the mount changes.',
     input_schema: {

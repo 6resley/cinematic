@@ -15,6 +15,7 @@
         <button id="btn-open" title="Open a saved project file">Open</button>
         <button id="btn-save" title="Save the project to a file">Save</button>
         <button id="btn-import" title="Pick the folder that holds a .glb model and its textures">Import model</button>
+        <button id="btn-import-prop" title="Pick the folder that holds a weapon or other model to attach to the character">Import prop</button>
         <button id="btn-import-anim" title="Pick one or more .anim.json files exported by the ripper">Import animations</button>
       </div>
       <div class="group mode" role="tablist" aria-label="View mode">
@@ -25,6 +26,7 @@
       <input id="file-open" type="file" accept=".json,.cinematic" hidden>
       <input id="file-import" type="file" webkitdirectory multiple hidden>
       <input id="file-anim" type="file" accept=".json" multiple hidden>
+      <input id="file-prop" type="file" webkitdirectory multiple hidden>
     </header>
 
     <aside id="actors">
@@ -85,6 +87,9 @@
         <label class="row"><span>Speed</span><input id="anim-speed" type="range" min="0.1" max="2" step="0.05"><output id="anim-speed-out"></output></label>
         <label class="row check"><input id="anim-loop" type="checkbox"><span>Repeat for the whole timeline</span></label>
         <p class="hint" id="anim-info"></p>
+        <h3>Props</h3>
+        <div id="props-list"></div>
+        <p class="hint" id="props-info"></p>
         <h3>Sky and sun</h3>
         <label class="row"><span>Time of day</span><input id="scn-tod" type="range" min="0" max="24" step="0.1"><output id="scn-tod-out"></output></label>
         <label class="row"><span>Sun heading</span><input id="scn-azimuth" type="range" min="0" max="360" step="1"><output id="scn-azimuth-out"></output></label>
@@ -155,6 +160,12 @@
       </div>
     </footer>
   </div>
+
+  <dialog id="chooser">
+    <h3>Which model?</h3>
+    <div id="chooser-list"></div>
+    <form method="dialog"><button>Cancel</button></form>
+  </dialog>
 
   <div id="viewer" hidden>
     <div class="viewer-bar">
