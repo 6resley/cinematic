@@ -5,6 +5,7 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { CameraTrack, EASE_MODES } from './keys.js';
 import { FlyLook } from './flylook.js';
 import { toLocal, toWorld, reframeKeys, bodyAxes } from './mount.js';
+import { Clip } from './anim.js';
 import { createClient, runTurn, describeError, MODEL } from './assistant.js';
 
 const $ = (id) => document.getElementById(id);
@@ -21,7 +22,8 @@ const defaults = () => ({
   duration: 10, fps: 60, time: 0, loop: false, autoKey: false,
   markers: [],
   mount: { bone: null, lookAt: null, level: false, roll: 0 },   // what the shot camera rides on
-  pose: {},                                   // bone name -> local rotation, for bones moved off the imported pose
+  anim: { name: null, start: 0, speed: 1, loop: true },   // which imported animation plays on the actor
+  pose: {},                                   // bone name -> rotation offset layered on top of the animation (or the imported pose)
   scene: { tod: 15, azimuth: 60, exposure: 1, fog: 0, grid: true },
 });
 const state = defaults();
@@ -123,15 +125,49 @@ function collectBones() {
   bones = {};
   bindPose.clear();
   actorRoot.traverse((o) => {
-    if (o.isBone && !bones[o.name]) { bones[o.name] = o; bindPose.set(o.name, o.quaternion.toArray()); }
+    if (o.isBone && !bones[o.name]) { bones[o.name] = o; bindPose.set(o.name, { q: o.quaternion.toArray(), p: o.position.toArray() }); }
   });
+  if (legacyPose) {                                  // poses saved by older versions were absolute rotations
+    for (const [name, q] of Object.entries(legacyPose)) {
+      if (!bindPose.has(name)) continue;
+      state.pose[name] = _dq.fromArray(bindPose.get(name).q).invert().multiply(_bq.fromArray(q)).toArray();
+    }
+    legacyPose = null;
+  }
 }
 
-/** Put every bone back to its imported rotation, then apply the saved pose on top. */
-function applyPose() {
-  for (const [name, q] of bindPose) bones[name].quaternion.fromArray(q);
-  for (const [name, q] of Object.entries(state.pose)) if (bones[name]) bones[name].quaternion.fromArray(q);
+const clipLibrary = new Map();                       // imported animations by name; never saved with the project
+const baseQuat = new Map();                          // rotation of each posed bone before its offset is applied
+const _dq = new THREE.Quaternion(), _bq = new THREE.Quaternion();
+let legacyPose = null;
+
+const activeClip = () => (state.anim.name ? clipLibrary.get(state.anim.name) || null : null);
+
+/** Rebuild the actor for the current time: imported pose, then the animation, then pose offsets on top. */
+function applyActor() {
+  for (const [name, bind] of bindPose) {
+    bones[name].quaternion.fromArray(bind.q);
+    bones[name].position.fromArray(bind.p);
+  }
+  const clip = activeClip();
+  if (clip) {
+    const frame = clip.frameAt((state.time - state.anim.start) * state.anim.speed, state.anim.loop);
+    for (const track of clip.bones) {
+      const bone = bones[track.name];
+      if (!bone) continue;
+      if (!Clip.rotation(track, frame, bone.quaternion)) bone.quaternion.identity();
+      Clip.position(track, frame, bone.position);       // no position track: the bone keeps the model's own offset
+    }
+  }
+  baseQuat.clear();
+  for (const [name, d] of Object.entries(state.pose)) {
+    const bone = bones[name];
+    if (!bone) continue;
+    baseQuat.set(name, bone.quaternion.clone());
+    bone.quaternion.multiply(_dq.fromArray(d));
+  }
 }
+const applyPose = applyActor;
 
 const _pa = new THREE.Vector3(), _pb = new THREE.Vector3();
 const _wq = new THREE.Quaternion(), _pq = new THREE.Quaternion();
@@ -157,6 +193,7 @@ function boneAxis(bone, childName) {
 function poseBone(op) {
   const bone = bones[op.bone];
   if (!bone) throw new Error(`No bone named "${op.bone}"`);
+  const base = baseQuat.get(bone.name) || bone.quaternion.clone();     // what the animation alone gives this bone
   if (op.op === 'aim') {
     const dir = new THREE.Vector3(...vec3In(op.direction, 'direction'));
     if (dir.lengthSq() < 1e-12) throw new Error('direction must not be zero');
@@ -169,7 +206,8 @@ function poseBone(op) {
   } else {
     throw new Error(`Unknown operation "${op.op}"`);
   }
-  state.pose[bone.name] = bone.quaternion.toArray();
+  baseQuat.set(bone.name, base);
+  state.pose[bone.name] = _dq.copy(base).invert().multiply(bone.quaternion).toArray();   // store the offset, not the result
 }
 
 function numIn(v, name, lo = -Infinity, hi = Infinity) {
@@ -236,6 +274,7 @@ function syncLocalFromWorld() {
 }
 
 function applyTrack() {
+  applyActor();
   updateFrame();
   if (!camDirty && track.evaluate(state.time, pose)) {
     camLocal.position.copy(pose.position);
@@ -389,6 +428,7 @@ function resize() {
   drawRuler();
   rebuildKeys();
   rebuildMarkers();
+  rebuildAnimBar();
   updatePlayhead();
 }
 
@@ -693,9 +733,9 @@ function setStatus(text) { $('status').textContent = text; }
 
 function serialise() {
   return {
-    app: 'cinematic', version: 1,
+    app: 'cinematic', version: 2,
     duration: state.duration, fps: state.fps, time: state.time, loop: state.loop, autoKey: state.autoKey,
-    markers: state.markers, scene: state.scene, pose: state.pose, mount: state.mount,
+    markers: state.markers, scene: state.scene, pose: state.pose, mount: state.mount, anim: state.anim,
     camera: { keys: track.toJSON(), rest: { pos: camLocal.position.toArray(), quat: camLocal.quaternion.toArray(), fov: shotCam.fov } },
     actor: { name: actors[1].name, pos: actorRoot.position.toArray(), quat: actorRoot.quaternion.toArray() },
   };
@@ -706,8 +746,10 @@ function load(data) {
   const d = defaults();
   Object.assign(state, d, {
     duration: data.duration ?? d.duration, fps: data.fps ?? d.fps, time: 0, loop: !!data.loop, autoKey: !!data.autoKey,
-    markers: data.markers ?? [], scene: { ...d.scene, ...data.scene }, pose: { ...(data.pose ?? {}) }, mount: { ...d.mount, ...data.mount },
+    markers: data.markers ?? [], scene: { ...d.scene, ...data.scene }, pose: (data.version ?? 1) >= 2 ? { ...(data.pose ?? {}) } : {}, mount: { ...d.mount, ...data.mount }, anim: { ...d.anim, ...data.anim },
   });
+  legacyPose = (data.version ?? 1) < 2 && data.pose && Object.keys(data.pose).length ? data.pose : null;
+  if (legacyPose && bindPose.size) collectBones();
   applyPose();
   track = new CameraTrack(data.camera?.keys ?? []);
   selectedKey = null;
@@ -719,6 +761,7 @@ function load(data) {
   }
   syncMountUI();
   if (data.actor) { actorRoot.position.fromArray(data.actor.pos); actorRoot.quaternion.fromArray(data.actor.quat); }
+  syncAnimUI();
   applyScene();
   setTime(data.time ?? 0);
   keysChanged();
@@ -810,6 +853,89 @@ async function importFiles(files) {
   }
 }
 
+// ------------------------------------------------------------------ animations
+$('btn-import-anim').addEventListener('click', () => $('file-anim').click());
+$('file-anim').addEventListener('change', async (e) => {
+  const files = [...e.target.files];
+  e.target.value = '';
+  setStatus(await importAnimations(files));
+});
+
+/** Load .anim.json files into the library. Returns a sentence describing what happened. */
+async function importAnimations(files) {
+  let added = 0, bad = 0, unnamed = 0, last = null;
+  for (const file of files) {
+    try {
+      const clip = new Clip(JSON.parse(await file.text()));
+      clipLibrary.set(clip.name, clip);
+      added++; last = clip;
+      if (clip.unnamed) unnamed++;
+    } catch { bad++; }
+  }
+  if (added && !activeClip()) setAnimation({ name: last.name, loop: last.loop });
+  syncAnimUI();
+  if (!added) return bad ? 'None of those files were animation exports' : 'No files chosen';
+  const fit = last && Object.keys(bones).length ? ` · ${last.bones.filter((b) => bones[b.name]).length} of ${last.bones.length} bones match this model` : '';
+  return `Imported ${added} animation(s)${bad ? `, skipped ${bad} other file(s)` : ''}${fit}`
+    + (unnamed ? ` · ${unnamed} have placeholder bone names and cannot drive a model` : '');
+}
+
+function setAnimation(next) {
+  Object.assign(state.anim, next);
+  if (state.anim.name && !clipLibrary.has(state.anim.name)) state.anim.name = null;
+  state.anim.speed = clamp(Number(state.anim.speed) || 1, 0.05, 4);
+  state.anim.start = clamp(Number(state.anim.start) || 0, 0, state.duration);
+  syncAnimUI();
+  scheduleAutosave();
+}
+
+function syncAnimUI() {
+  const sel = $('anim-clip'), names = [...clipLibrary.keys()].sort();
+  sel.replaceChildren(new Option(names.length ? 'None' : 'None (import animations first)', ''), ...names.map((n) => new Option(n, n)));
+  sel.value = activeClip() ? state.anim.name : '';
+  sel.disabled = !names.length;
+  $('anim-start').value = state.anim.start;
+  $('anim-speed').value = state.anim.speed;
+  $('anim-speed-out').textContent = `${state.anim.speed.toFixed(2)}×`;
+  $('anim-loop').checked = state.anim.loop;
+  const clip = activeClip();
+  $('anim-info').textContent = clip
+    ? `${clip.duration.toFixed(2)} s at ${clip.framerate} fps · ${clip.bones.length} bones${clip.loop ? ' · made to loop' : ''}`
+    : (state.anim.name ? `"${state.anim.name}" is not loaded. Import it again to see it play.` : '');
+  rebuildAnimBar();
+}
+
+function rebuildAnimBar() {
+  const row = $('tl-anim'), clip = activeClip();
+  row.replaceChildren();
+  if (!clip) return;
+  const length = clip.duration / state.anim.speed;
+  const end = state.anim.loop ? state.duration : Math.min(state.duration, state.anim.start + length);
+  const bar = document.createElement('div');
+  bar.className = 'tl-clip';
+  bar.style.left = `${xOf(state.anim.start)}px`;
+  bar.style.width = `${Math.max(2, xOf(end) - xOf(state.anim.start))}px`;
+  bar.textContent = clip.name;
+  bar.title = `${clip.name} · ${length.toFixed(2)} s per pass`;
+  row.append(bar);
+  if (state.anim.loop && length > 0.05) {                       // a tick where each repeat begins
+    for (let t = state.anim.start + length; t < state.duration - 1e-6; t += length) {
+      const tick = document.createElement('div');
+      tick.className = 'tl-clip-tick';
+      tick.style.left = `${xOf(t)}px`;
+      row.append(tick);
+    }
+  }
+}
+
+$('anim-clip').addEventListener('change', (e) => {
+  const clip = clipLibrary.get(e.target.value);
+  setAnimation({ name: e.target.value || null, ...(clip ? { loop: clip.loop } : {}) });
+});
+$('anim-start').addEventListener('change', (e) => setAnimation({ start: Number(e.target.value) }));
+$('anim-speed').addEventListener('input', (e) => setAnimation({ speed: Number(e.target.value) }));
+$('anim-loop').addEventListener('change', (e) => setAnimation({ loop: e.target.checked }));
+
 // ------------------------------------------------------------------ assistant tools
 const round3 = (v) => +v.toFixed(3);
 const scratchCam = new THREE.PerspectiveCamera(40, SHOT_ASPECT, 0.05, 800);
@@ -872,6 +998,7 @@ function sceneSummary() {
       has_skeleton: boneCount > 0, bone_count: boneCount, posed_bones: Object.keys(state.pose).length,
       bounds: { min: box.min.toArray().map(round3), max: box.max.toArray().map(round3) },
     },
+    animation: { ...state.anim, loaded: !!activeClip(), imported_count: clipLibrary.size },
     markers: state.markers,
   };
 }
@@ -881,7 +1008,7 @@ const toolHandlers = {
   set_time: (i) => { setTime(numIn(i.seconds, 'seconds')); return `Playhead at ${state.time}s`; },
   set_timeline: (i) => {
     if (i.duration !== undefined) state.duration = numIn(i.duration, 'duration', 1, 600);
-    if (i.fps !== undefined) { if (![24, 30, 60, 120].includes(i.fps)) throw new Error('fps must be 24, 30, 60 or 120'); state.fps = i.fps; }
+    if (i.fps !== undefined) { if (![24, 30, 60, 120, 240].includes(i.fps)) throw new Error('fps must be 24, 30, 60, 120 or 240'); state.fps = i.fps; }
     setTime(state.time); syncKeyUI(); resize();
     return `Timeline is ${state.duration}s at ${state.fps} fps`;
   },
@@ -936,6 +1063,17 @@ const toolHandlers = {
     setMount(next);
     return JSON.stringify({ bone: state.mount.bone, look_at_bone: state.mount.lookAt, keep_level: state.mount.level });
   },
+  list_animations: () => JSON.stringify([...clipLibrary.values()].map((c) => ({ name: c.name, seconds: round3(c.duration), made_to_loop: c.loop, usable: !c.unnamed }))),
+  set_animation: (i) => {
+    if (i.name && !clipLibrary.has(i.name)) throw new Error(`No imported animation named "${i.name}". Call list_animations to see what is loaded.`);
+    const next = {};
+    if (i.name !== undefined) { next.name = i.name || null; if (i.name && i.loop === undefined) next.loop = clipLibrary.get(i.name).loop; }
+    if (i.start !== undefined) next.start = numIn(i.start, 'start', 0, state.duration);
+    if (i.speed !== undefined) next.speed = numIn(i.speed, 'speed', 0.05, 4);
+    if (i.loop !== undefined) next.loop = !!i.loop;
+    setAnimation(next);
+    return JSON.stringify(state.anim);
+  },
   move_actor: (i) => {
     if (i.position !== undefined) actorRoot.position.fromArray(vec3In(i.position, 'position'));
     if (i.heading_deg !== undefined) actorRoot.rotation.set(0, THREE.MathUtils.degToRad(numIn(i.heading_deg, 'heading_deg')), 0);
@@ -954,6 +1092,7 @@ const toolHandlers = {
   list_bones: () => {
     const names = Object.keys(bones);
     if (!names.length) throw new Error('The actor has no skeleton. Import a rigged model to pose it.');
+    applyActor();
     actorRoot.updateMatrixWorld(true);
     return JSON.stringify(names.map((n) => {
       const b = bones[n];
@@ -963,6 +1102,7 @@ const toolHandlers = {
   pose_bones: (i) => {
     if (!Object.keys(bones).length) throw new Error('The actor has no skeleton. Import a rigged model to pose it.');
     if (!Array.isArray(i.operations) || !i.operations.length) throw new Error('operations must be a non-empty list');
+    applyActor();
     i.operations.forEach((op, n) => { try { poseBone(op); } catch (err) { throw new Error(`Operation ${n + 1} (${op?.bone}): ${err.message}. Earlier operations were applied.`); } });
     return `Applied ${i.operations.length} operation(s)`;
   },
@@ -1002,7 +1142,7 @@ const AI_KEY_STORE = 'cinematic.apikey.v1';
 const TOOL_LABELS = {
   get_scene: 'Reading the scene', set_time: 'Moving the playhead', set_timeline: 'Changing the timeline',
   set_camera: 'Placing the camera', set_camera_keys: 'Keying the camera', delete_camera_keys: 'Deleting camera keys',
-  set_scene: 'Adjusting sky and light', mount_camera: 'Mounting the camera', move_actor: 'Moving the actor', add_markers: 'Adding markers',
+  set_scene: 'Adjusting sky and light', list_animations: 'Checking the animations', set_animation: 'Setting the animation', mount_camera: 'Mounting the camera', move_actor: 'Moving the actor', add_markers: 'Adding markers',
   list_bones: 'Reading the skeleton', pose_bones: 'Posing bones', reset_pose: 'Resetting the pose', capture_view: 'Looking at the result',
 };
 const aiMessages = [];
@@ -1100,6 +1240,7 @@ try {
 applyScene();
 rebuildActors();
 syncMountUI();
+syncAnimUI();
 setMode('free');
 keysChanged();
 resize();
@@ -1109,6 +1250,6 @@ tick();
 // Handle for automated checks and for poking at things from the console.
 window.app = {
   state, get track() { return track; }, get bones() { return bones; }, shotCam, freeCam, actorRoot,
-  setTime, setMode, setKeyNow, setMount, applyMountPreset, selectActor, renderStill, serialise, load, importFiles, execTool,
+  setTime, setMode, setKeyNow, setMount, applyMountPreset, selectActor, renderStill, serialise, load, importFiles, importAnimations, setAnimation, execTool,
   assistant: { send: aiSend, messages: aiMessages, useClient(c) { aiClientOverride = c; } },
 };

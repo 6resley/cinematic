@@ -13,6 +13,7 @@ How the scene works:
 - There is one shot camera. Its motion is a list of keyframes (time, position, where it looks, focal length). Longer focal length means a tighter, more zoomed shot: 24 is wide, 35 to 50 is natural, 85 and above is a close-up.
 - There is one character ("actor"). If a rigged model is imported it has named bones you can pose; otherwise it is a plain stand-in figure with no bones.
 - The timeline has a length in seconds and a frame rate.
+- Animations exported from the game can be imported by the person and played on the actor (a sprint loop, a death, a reload). One plays at a time. Any pose you set is an offset layered on top of the playing animation, so the motion continues underneath it.
 - The camera can be mounted on a bone so it travels with the character (for example on the weapon hand for a gun-barrel shot). While mounted, camera keys are remembered relative to that bone. It can also stay aimed at a bone, such as the head, wherever it rides.
 
 How to work:
@@ -40,7 +41,7 @@ export const TOOLS = [
   {
     name: 'set_timeline',
     description: 'Change the timeline length in seconds and/or the frame rate.',
-    input_schema: { type: 'object', properties: { duration: { type: 'number' }, fps: { type: 'number', enum: [24, 30, 60, 120] } } },
+    input_schema: { type: 'object', properties: { duration: { type: 'number' }, fps: { type: 'number', enum: [24, 30, 60, 120, 240] } } },
   },
   {
     name: 'set_camera',
@@ -98,6 +99,24 @@ export const TOOLS = [
         sun_heading: { type: 'number', description: 'Compass direction the sun shines from, 0 to 360 degrees.' },
         exposure: { type: 'number', description: 'Overall brightness, 0.2 to 3. 1 is normal.' },
         fog: { type: 'number', description: 'Fog thickness, 0 (off) to 0.15.' },
+      },
+    },
+  },
+  {
+    name: 'list_animations',
+    description: 'List the animations the person has imported: name, length in seconds, whether it is made to loop, and whether it is usable.',
+    input_schema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'set_animation',
+    description: 'Choose which imported animation plays on the actor and how. Pass name null to stop animating. Only the fields you pass are changed.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        name: { type: ['string', 'null'] },
+        start: { type: 'number', description: 'Time on the timeline, in seconds, where the animation begins.' },
+        speed: { type: 'number', description: 'Playback speed, 0.05 to 4. 1 is normal, 0.25 is slow motion.' },
+        loop: { type: 'boolean', description: 'Repeat for the rest of the timeline.' },
       },
     },
   },

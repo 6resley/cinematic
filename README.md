@@ -27,6 +27,7 @@ Then open the address it prints (normally http://127.0.0.1:5173).
 - **Camera keyframes**: <kbd>K</kbd> sets a key at the playhead. Drag the diamonds on the timeline to retime. Each key has an ease (auto, linear, smooth, hold). Auto-key records a key whenever you move the camera.
 - **Timeline**: scrub, play (<kbd>Space</kbd>), step frames (<kbd>←</kbd> <kbd>→</kbd>, with <kbd>Shift</kbd> for ten), markers (<kbd>M</kbd>), adjustable length and frame rate.
 - **Lens**: focal length and roll, both keyframed with the camera.
+- **Animations**: import `.anim.json` files exported by the ripper and play one on the character, with start time, speed and repeat. The game's 30 fps animations are blended between keys, so they stay smooth at 60, 120 or 240 fps. Poses you set are stored as offsets on top of the playing animation, so you can turn the head or lift an arm while the run carries on underneath.
 - **Camera mounts**: make the camera ride on any bone of an imported character (weapon hand, head, foot), optionally staying aimed at another bone and optionally keeping the horizon level. Four presets: Gun cam, Helmet cam, Over shoulder, Boot cam. Keys set while mounted are remembered relative to the mount.
 - **Scene**: time of day, sun heading, exposure, fog.
 - **Move things**: select an item in the Scene list, then in Free mode press <kbd>W</kbd> to move or <kbd>E</kbd> to rotate.
@@ -47,7 +48,7 @@ The **Assistant** tab lets you describe what you want in plain words ("slow push
 
 ## Not built yet
 
-Render queue for whole shots, animation clips and keyframed bone poses (poses are static for now), asset library, weapons and camos, weather, look presets, depth of field and motion blur, undo/redo, and a packaged desktop build.
+Render queue for whole shots, several animation clips in sequence, keyframed bone poses (pose offsets are static for now), root motion, asset library, weapons and camos, weather, look presets, depth of field and motion blur, undo/redo, and a packaged desktop build.
 
 ## Development
 

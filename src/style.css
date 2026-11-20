@@ -21,7 +21,7 @@ html, body { height: 100%; margin: 0; background: var(--bg); overflow: hidden; }
   display: grid;
   height: 100%;
   grid-template-columns: 200px minmax(0, 1fr) 300px;
-  grid-template-rows: 40px minmax(0, 1fr) 150px;
+  grid-template-rows: 40px minmax(0, 1fr) 178px;
   grid-template-areas: "top top top" "actors view inspector" "timeline timeline timeline";
 }
 #topbar { grid-area: top; display: flex; align-items: center; gap: 14px; padding: 0 12px; background: var(--panel); border-bottom: 1px solid var(--line); }
@@ -117,3 +117,9 @@ kbd { background: var(--panel-2); border: 1px solid var(--line); border-radius: 
 .ai-msg.tool { color: var(--muted); padding: 0 8px; font-size: 12px; }
 .ai-msg.notice { color: #f0b8a8; background: #2c1c19; }
 .tabs button { padding-left: 2px; padding-right: 2px; }
+
+/* animation clip on the timeline */
+.tl-clip { position: absolute; top: 5px; height: 18px; line-height: 18px; padding: 0 6px; background: #3f6d8f; border: 1px solid #5b93bd; border-radius: 3px; color: #e7f1f8; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; pointer-events: none; }
+.tl-clip-tick { position: absolute; top: 5px; height: 18px; width: 1px; background: #cfe3f1; opacity: 0.7; pointer-events: none; }
+#timeline { min-height: 0; }
+.row input[type="number"] { width: 100%; }

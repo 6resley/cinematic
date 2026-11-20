@@ -15,6 +15,7 @@
         <button id="btn-open" title="Open a saved project file">Open</button>
         <button id="btn-save" title="Save the project to a file">Save</button>
         <button id="btn-import" title="Pick the folder that holds a .glb model and its textures">Import model</button>
+        <button id="btn-import-anim" title="Pick one or more .anim.json files exported by the ripper">Import animations</button>
       </div>
       <div class="group mode" role="tablist" aria-label="View mode">
         <button id="mode-camera" role="tab" title="Look through the shot camera (Tab)">Camera</button>
@@ -23,6 +24,7 @@
       <div id="status" class="status"></div>
       <input id="file-open" type="file" accept=".json,.cinematic" hidden>
       <input id="file-import" type="file" webkitdirectory multiple hidden>
+      <input id="file-anim" type="file" accept=".json" multiple hidden>
     </header>
 
     <aside id="actors">
@@ -77,6 +79,12 @@
       </section>
 
       <section data-panel="scene" class="panel">
+        <h3>Animation</h3>
+        <label class="row"><span>Clip</span><select id="anim-clip"></select></label>
+        <label class="row"><span>Starts at</span><input id="anim-start" type="number" min="0" step="0.1"><output>s</output></label>
+        <label class="row"><span>Speed</span><input id="anim-speed" type="range" min="0.1" max="2" step="0.05"><output id="anim-speed-out"></output></label>
+        <label class="row check"><input id="anim-loop" type="checkbox"><span>Repeat for the whole timeline</span></label>
+        <p class="hint" id="anim-info"></p>
         <h3>Sky and sun</h3>
         <label class="row"><span>Time of day</span><input id="scn-tod" type="range" min="0" max="24" step="0.1"><output id="scn-tod-out"></output></label>
         <label class="row"><span>Sun heading</span><input id="scn-azimuth" type="range" min="0" max="360" step="1"><output id="scn-azimuth-out"></output></label>
@@ -126,7 +134,7 @@
         <button id="tl-play" title="Play or pause (Space)">▶</button>
         <output id="tl-time"></output>
         <label>Length <input id="tl-duration" type="number" min="1" max="600" step="1"> s</label>
-        <label>Rate <select id="tl-fps"><option>24</option><option>30</option><option selected>60</option><option>120</option></select> fps</label>
+        <label>Rate <select id="tl-fps"><option>24</option><option>30</option><option selected>60</option><option>120</option><option>240</option></select> fps</label>
         <label class="check"><input id="tl-loop" type="checkbox"> Loop</label>
         <button id="tl-marker" title="Add a marker at the playhead (M)">Add marker</button>
       </div>
@@ -135,11 +143,13 @@
           <div class="tl-name ruler-name"></div>
           <div class="tl-name">Markers</div>
           <div class="tl-name">Camera</div>
+          <div class="tl-name">Animation</div>
         </div>
         <div class="tl-tracks" id="tl-tracks">
           <canvas id="tl-ruler" height="22"></canvas>
           <div class="tl-row" id="tl-markers"></div>
           <div class="tl-row" id="tl-camera"></div>
+          <div class="tl-row" id="tl-anim"></div>
           <div id="tl-playhead"></div>
         </div>
       </div>
