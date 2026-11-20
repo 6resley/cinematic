@@ -56,6 +56,18 @@
         </div>
         <label class="row check"><input id="cam-autokey" type="checkbox"><span>Auto-key: moving the camera records a keyframe</span></label>
         <label class="row"><span>Selected key</span><select id="key-ease"></select></label>
+        <h3>Mount</h3>
+        <label class="row"><span>Ride on</span><select id="cam-mount" title="The camera travels with this bone"></select></label>
+        <label class="row"><span>Stay aimed at</span><select id="cam-lookat" title="The camera keeps pointing at this bone wherever it rides"></select></label>
+        <label class="row check"><input id="cam-level" type="checkbox"><span>Keep the horizon level (ride the position only)</span></label>
+        <div class="row buttons">
+          <button data-mount-preset="gun" title="On the weapon hand, wide lens, locked on the face">Gun cam</button>
+          <button data-mount-preset="helmet" title="At the eyes, looking where the head looks">Helmet cam</button>
+        </div>
+        <div class="row buttons">
+          <button data-mount-preset="shoulder" title="Behind the right shoulder, horizon level">Over shoulder</button>
+          <button data-mount-preset="boot" title="Low by the right foot, looking up at the face">Boot cam</button>
+        </div>
         <h3>Placement</h3>
         <div class="row buttons">
           <button id="btn-cam-to-view" title="Move the shot camera to where the free view is">Camera to view</button>

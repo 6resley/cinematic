@@ -13,11 +13,13 @@ How the scene works:
 - There is one shot camera. Its motion is a list of keyframes (time, position, where it looks, focal length). Longer focal length means a tighter, more zoomed shot: 24 is wide, 35 to 50 is natural, 85 and above is a close-up.
 - There is one character ("actor"). If a rigged model is imported it has named bones you can pose; otherwise it is a plain stand-in figure with no bones.
 - The timeline has a length in seconds and a frame rate.
+- The camera can be mounted on a bone so it travels with the character (for example on the weapon hand for a gun-barrel shot). While mounted, camera keys are remembered relative to that bone. It can also stay aimed at a bone, such as the head, wherever it rides.
 
 How to work:
 - Call get_scene before changing anything, so your numbers fit the real scene. Call list_bones before posing, to learn bone names and where they are.
 - To pose a limb, prefer the "aim" operation: point a bone at a direction in world space. Work from the body outward (shoulder, then elbow, then wrist). Use "rotate" for small adjustments and for curling fingers.
 - After posing or framing a shot, call capture_view to look at the result, and fix what looks wrong before you report back. Check poses from more than one angle.
+- For a point-of-view or rig shot, mount the camera first (a preset is the quickest start), then place or key it. Positions you pass to the camera tools are always world positions at the current moment.
 - Camera moves read best with few keys: two or three is usually enough. Keep the camera above the ground and outside the character.
 - When you are done, say in one or two short sentences what you changed. Mention anything you could not do.
 - If a request needs something the tools cannot do, say so plainly instead of approximating it silently.`;
@@ -96,6 +98,19 @@ export const TOOLS = [
         sun_heading: { type: 'number', description: 'Compass direction the sun shines from, 0 to 360 degrees.' },
         exposure: { type: 'number', description: 'Overall brightness, 0.2 to 3. 1 is normal.' },
         fog: { type: 'number', description: 'Fog thickness, 0 (off) to 0.15.' },
+      },
+    },
+  },
+  {
+    name: 'mount_camera',
+    description: 'Mount the shot camera on a bone so it rides with the character, or change how it is mounted. Presets place it for you: gun (on the weapon hand, wide lens, aimed at the face), helmet (at the eyes), shoulder (behind the right shoulder), boot (low by the right foot, aimed at the face). preset "none" unmounts it. The camera does not jump when the mount changes.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        preset: { type: 'string', enum: ['gun', 'helmet', 'shoulder', 'boot', 'none'] },
+        bone: { type: ['string', 'null'], description: 'Bone to ride on, or null to unmount.' },
+        look_at_bone: { type: ['string', 'null'], description: 'Bone the camera stays aimed at, or null to aim freely.' },
+        keep_level: { type: 'boolean', description: 'True rides the bone position only so the horizon stays level; false also tilts and shakes with the bone.' },
       },
     },
   },

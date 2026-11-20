@@ -27,6 +27,7 @@ Then open the address it prints (normally http://127.0.0.1:5173).
 - **Camera keyframes**: <kbd>K</kbd> sets a key at the playhead. Drag the diamonds on the timeline to retime. Each key has an ease (auto, linear, smooth, hold). Auto-key records a key whenever you move the camera.
 - **Timeline**: scrub, play (<kbd>Space</kbd>), step frames (<kbd>←</kbd> <kbd>→</kbd>, with <kbd>Shift</kbd> for ten), markers (<kbd>M</kbd>), adjustable length and frame rate.
 - **Lens**: focal length and roll, both keyframed with the camera.
+- **Camera mounts**: make the camera ride on any bone of an imported character (weapon hand, head, foot), optionally staying aimed at another bone and optionally keeping the horizon level. Four presets: Gun cam, Helmet cam, Over shoulder, Boot cam. Keys set while mounted are remembered relative to the mount.
 - **Scene**: time of day, sun heading, exposure, fog.
 - **Move things**: select an item in the Scene list, then in Free mode press <kbd>W</kbd> to move or <kbd>E</kbd> to rotate.
 - **Test render**: renders the frame at the playhead at up to 3840 × 2160 into a viewer, with Save PNG (<kbd>Shift</kbd>+<kbd>R</kbd>).

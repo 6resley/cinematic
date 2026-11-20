@@ -4,6 +4,7 @@ import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { CameraTrack, EASE_MODES } from './keys.js';
 import { FlyLook } from './flylook.js';
+import { toLocal, toWorld, reframeKeys, bodyAxes } from './mount.js';
 import { createClient, runTurn, describeError, MODEL } from './assistant.js';
 
 const $ = (id) => document.getElementById(id);
@@ -19,6 +20,7 @@ const AUTOSAVE_KEY = 'cinematic.autosave.v1';
 const defaults = () => ({
   duration: 10, fps: 60, time: 0, loop: false, autoKey: false,
   markers: [],
+  mount: { bone: null, lookAt: null, level: false, roll: 0 },   // what the shot camera rides on
   pose: {},                                   // bone name -> local rotation, for bones moved off the imported pose
   scene: { tod: 15, azimuth: 60, exposure: 1, fog: 0, grid: true },
 });
@@ -81,13 +83,19 @@ const camHelper = new THREE.CameraHelper(shotCam);
 const pathLine = new THREE.Line(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: 0xe8a13a }));
 const keyDots = new THREE.Points(new THREE.BufferGeometry(), new THREE.PointsMaterial({ color: 0xf2c26b, size: 9, sizeAttenuation: false }));
 pathLine.frustumCulled = keyDots.frustumCulled = false;
-scene.add(shotCam, camHelper, pathLine, keyDots);
+const mountGroup = new THREE.Group();            // follows the mount, so the path is drawn where the camera will ride
+mountGroup.add(pathLine, keyDots);
+scene.add(shotCam, camHelper, mountGroup);
+const camLocal = { position: new THREE.Vector3(), quaternion: new THREE.Quaternion() };   // camera pose relative to its mount
+const mountFrame = { position: new THREE.Vector3(), quaternion: new THREE.Quaternion() };
 
 function resetCameras() {
   shotCam.position.set(2.6, 1.5, 3.4);
   shotCam.lookAt(0, 1.1, 0);
   shotCam.fov = fovFromFocal(35);
   shotCam.updateProjectionMatrix();
+  camLocal.position.copy(shotCam.position);     // nothing is mounted after a reset, so local and world agree
+  camLocal.quaternion.copy(shotCam.quaternion);
   freeCam.position.set(6.5, 4.2, 7.5);
   orbit.target.set(0, 1, 0);
   orbit.update();
@@ -209,17 +217,89 @@ function setTime(t) {
   updatePlayhead();
 }
 
+const lookAtActive = () => !!(state.mount.lookAt && bones[state.mount.lookAt]);
+
+/** Work out where the mount is right now. With nothing mounted the frame is the world itself. */
+function updateFrame() {
+  const bone = state.mount.bone && bones[state.mount.bone];
+  if (!bone) { mountFrame.position.set(0, 0, 0); mountFrame.quaternion.identity(); return; }
+  actorRoot.updateMatrixWorld(true);
+  bone.getWorldPosition(mountFrame.position);
+  if (state.mount.level) mountFrame.quaternion.identity();      // ride the position only, keep the horizon level
+  else bone.getWorldQuaternion(mountFrame.quaternion);
+}
+
+/** The camera was placed in world space; remember that placement relative to the mount. */
+function syncLocalFromWorld() {
+  updateFrame();
+  toLocal(mountFrame, shotCam, camLocal);
+}
+
 function applyTrack() {
-  if (camDirty || !track.evaluate(state.time, pose)) return;
-  shotCam.position.copy(pose.position);
-  shotCam.quaternion.copy(pose.quaternion);
-  if (shotCam.fov !== pose.fov) { shotCam.fov = pose.fov; shotCam.updateProjectionMatrix(); }
+  updateFrame();
+  if (!camDirty && track.evaluate(state.time, pose)) {
+    camLocal.position.copy(pose.position);
+    camLocal.quaternion.copy(pose.quaternion);
+    if (shotCam.fov !== pose.fov) { shotCam.fov = pose.fov; shotCam.updateProjectionMatrix(); }
+  }
+  toWorld(mountFrame, camLocal, shotCam);
+  const target = state.mount.lookAt && bones[state.mount.lookAt];
+  if (target) {                                                  // stay locked on a bone; the horizon is level unless a roll is set
+    shotCam.lookAt(target.getWorldPosition(_pa));
+    euler.setFromQuaternion(shotCam.quaternion, 'YXZ');
+    euler.z = THREE.MathUtils.degToRad(state.mount.roll || 0);
+    shotCam.quaternion.setFromEuler(euler);
+  }
+  mountGroup.position.copy(mountFrame.position);
+  mountGroup.quaternion.copy(mountFrame.quaternion);
 }
 
 function setKeyNow() {
-  selectedKey = track.setKey(state.time, shotCam);
+  selectedKey = track.setKey(state.time, { position: camLocal.position, quaternion: camLocal.quaternion, fov: shotCam.fov });
   camDirty = false;
   keysChanged();
+}
+
+/** Change what the camera rides on without moving the camera or its path right now. */
+function setMount(next) {
+  updateFrame();
+  const old = { position: mountFrame.position.clone(), quaternion: mountFrame.quaternion.clone() };
+  const world = toWorld(old, camLocal, { position: new THREE.Vector3(), quaternion: new THREE.Quaternion() });
+  Object.assign(state.mount, next);
+  if (state.mount.bone && !bones[state.mount.bone]) state.mount.bone = null;
+  if (state.mount.lookAt && !bones[state.mount.lookAt]) state.mount.lookAt = null;
+  updateFrame();
+  reframeKeys(track.keys, old, mountFrame);
+  toLocal(mountFrame, world, camLocal);
+  keysChanged();
+  syncMountUI();
+}
+
+const MOUNT_PRESETS = {
+  gun: { label: 'Gun cam', bones: ['tag_weapon_right', 'j_gun', 'j_wrist_ri'], lookAt: 'j_head', level: false, focal: 16, offset: [0.55, 0.10, 0.05] },
+  helmet: { label: 'Helmet cam', bones: ['j_head'], lookAt: null, level: false, focal: 18, offset: [0.25, 0.08, 0] },   // just in front of the face, clear of a hood
+  shoulder: { label: 'Over shoulder', bones: ['j_spine4', 'j_spineupper'], lookAt: null, level: true, focal: 28, offset: [-0.5, 0.22, 0.28] },
+  boot: { label: 'Boot cam', bones: ['j_ankle_ri', 'j_ball_ri'], lookAt: 'j_head', level: true, focal: 14, offset: [0.45, 0.04, 0.2] },
+};
+
+/** Mount the camera with a ready-made placement. offset is [forward, up, right] in metres from the mount. */
+function applyMountPreset(id) {
+  const preset = MOUNT_PRESETS[id];
+  if (!preset) throw new Error(`Unknown mount preset "${id}"`);
+  const bone = preset.bones.find((b) => bones[b]);
+  const left = bones.j_shoulder_le || bones.j_clavicle_le, right = bones.j_shoulder_ri || bones.j_clavicle_ri;
+  if (!bone || !left || !right) throw new Error('This model does not have the bones that preset needs. Import a rigged character first.');
+  actorRoot.updateMatrixWorld(true);
+  const ax = bodyAxes(left.getWorldPosition(new THREE.Vector3()), right.getWorldPosition(new THREE.Vector3()));
+  setMount({ bone, lookAt: preset.lookAt && bones[preset.lookAt] ? preset.lookAt : null, level: preset.level, roll: 0 });
+  const at = bones[bone].getWorldPosition(new THREE.Vector3());
+  shotCam.position.copy(at).addScaledVector(ax.forward, preset.offset[0]).addScaledVector(ax.up, preset.offset[1]).addScaledVector(ax.right, preset.offset[2]);
+  shotCam.position.y = Math.max(shotCam.position.y, 0.05);
+  const aim = state.mount.lookAt ? bones[state.mount.lookAt].getWorldPosition(new THREE.Vector3()) : shotCam.position.clone().addScaledVector(ax.forward, 5).addScaledVector(ax.up, -0.2);
+  shotCam.lookAt(aim);
+  shotCam.fov = fovFromFocal(preset.focal);
+  cameraEdited();
+  return preset.label;
 }
 
 function deleteSelectedKey() {
@@ -230,6 +310,7 @@ function deleteSelectedKey() {
 
 /** The shot camera was moved by the user (fly, lens, gizmo). */
 function cameraEdited() {
+  syncLocalFromWorld();
   shotCam.updateProjectionMatrix();
   if (state.autoKey) setKeyNow();
   else { camDirty = track.keys.length > 0; scheduleAutosave(); }
@@ -500,8 +581,11 @@ function bindRange(id, read, write, format) {
 }
 const syncers = [
   bindRange('cam-focal', () => focalFromFov(shotCam.fov), (v) => { shotCam.fov = fovFromFocal(v); cameraEdited(); }, (v) => `${Math.round(v)} mm`),
-  bindRange('cam-roll', () => THREE.MathUtils.radToDeg(euler.setFromQuaternion(shotCam.quaternion, 'YXZ').z),
-    (v) => { euler.setFromQuaternion(shotCam.quaternion, 'YXZ'); euler.z = THREE.MathUtils.degToRad(v); shotCam.quaternion.setFromEuler(euler); cameraEdited(); },
+  bindRange('cam-roll', () => (lookAtActive() ? state.mount.roll || 0 : THREE.MathUtils.radToDeg(euler.setFromQuaternion(shotCam.quaternion, 'YXZ').z)),
+    (v) => {
+      if (lookAtActive()) { state.mount.roll = v; scheduleAutosave(); return; }
+      euler.setFromQuaternion(shotCam.quaternion, 'YXZ'); euler.z = THREE.MathUtils.degToRad(v); shotCam.quaternion.setFromEuler(euler); cameraEdited();
+    },
     (v) => `${v.toFixed(1)}°`),
   bindRange('scn-tod', () => state.scene.tod, (v) => { state.scene.tod = v; applyScene(); scheduleAutosave(); },
     (v) => `${String(Math.floor(v) % 24).padStart(2, '0')}:${String(Math.round((v % 1) * 60) % 60).padStart(2, '0')}`),
@@ -526,6 +610,24 @@ function syncKeyUI() {
   $('tl-fps').value = state.fps;
   $('tl-loop').checked = state.loop;
 }
+
+function syncMountUI() {
+  const names = Object.keys(bones).sort();
+  for (const [id, value] of [['cam-mount', state.mount.bone], ['cam-lookat', state.mount.lookAt]]) {
+    const sel = $(id);
+    sel.replaceChildren(new Option(names.length ? 'None' : 'None (import a rigged model)', ''), ...names.map((n) => new Option(n, n)));
+    sel.value = value && bones[value] ? value : '';
+    sel.disabled = !names.length;
+  }
+  $('cam-level').checked = state.mount.level;
+  document.querySelectorAll('[data-mount-preset]').forEach((b) => { b.disabled = !names.length; });
+}
+$('cam-mount').addEventListener('change', (e) => setMount({ bone: e.target.value || null }));
+$('cam-lookat').addEventListener('change', (e) => setMount({ lookAt: e.target.value || null }));
+$('cam-level').addEventListener('change', (e) => setMount({ level: e.target.checked }));
+document.querySelectorAll('[data-mount-preset]').forEach((b) => b.addEventListener('click', () => {
+  try { setStatus(`${applyMountPreset(b.dataset.mountPreset)} set`); } catch (err) { setStatus(err.message); }
+}));
 
 $('btn-key').addEventListener('click', setKeyNow);
 $('btn-del-key').addEventListener('click', deleteSelectedKey);
@@ -593,8 +695,8 @@ function serialise() {
   return {
     app: 'cinematic', version: 1,
     duration: state.duration, fps: state.fps, time: state.time, loop: state.loop, autoKey: state.autoKey,
-    markers: state.markers, scene: state.scene, pose: state.pose,
-    camera: { keys: track.toJSON(), rest: { pos: shotCam.position.toArray(), quat: shotCam.quaternion.toArray(), fov: shotCam.fov } },
+    markers: state.markers, scene: state.scene, pose: state.pose, mount: state.mount,
+    camera: { keys: track.toJSON(), rest: { pos: camLocal.position.toArray(), quat: camLocal.quaternion.toArray(), fov: shotCam.fov } },
     actor: { name: actors[1].name, pos: actorRoot.position.toArray(), quat: actorRoot.quaternion.toArray() },
   };
 }
@@ -604,17 +706,18 @@ function load(data) {
   const d = defaults();
   Object.assign(state, d, {
     duration: data.duration ?? d.duration, fps: data.fps ?? d.fps, time: 0, loop: !!data.loop, autoKey: !!data.autoKey,
-    markers: data.markers ?? [], scene: { ...d.scene, ...data.scene }, pose: { ...(data.pose ?? {}) },
+    markers: data.markers ?? [], scene: { ...d.scene, ...data.scene }, pose: { ...(data.pose ?? {}) }, mount: { ...d.mount, ...data.mount },
   });
   applyPose();
   track = new CameraTrack(data.camera?.keys ?? []);
   selectedKey = null;
   if (data.camera?.rest) {
-    shotCam.position.fromArray(data.camera.rest.pos);
-    shotCam.quaternion.fromArray(data.camera.rest.quat);
+    camLocal.position.fromArray(data.camera.rest.pos);
+    camLocal.quaternion.fromArray(data.camera.rest.quat);
     shotCam.fov = data.camera.rest.fov;
     shotCam.updateProjectionMatrix();
   }
+  syncMountUI();
   if (data.actor) { actorRoot.position.fromArray(data.actor.pos); actorRoot.quaternion.fromArray(data.actor.quat); }
   applyScene();
   setTime(data.time ?? 0);
@@ -698,6 +801,7 @@ async function importFiles(files) {
     actorRoot.add(gltf.scene);
     collectBones();
     applyPose();
+    syncMountUI();
     actors[1].name = main.name.replace(/\.(glb|gltf)$/i, '');
     rebuildActors();
     setStatus(missing ? `Loaded ${main.name} · ${missing} texture(s) not found in the folder` : `Loaded ${main.name}`);
@@ -713,7 +817,9 @@ const scratchCam = new THREE.PerspectiveCamera(40, SHOT_ASPECT, 0.05, 800);
 function poseCamera(cam, input) {
   cam.position.fromArray(vec3In(input.position, 'position'));
   cam.lookAt(...vec3In(input.look_at, 'look_at'));
-  if (input.roll_deg !== undefined) {
+  if (input.roll_deg !== undefined && cam === shotCam && lookAtActive()) {
+    state.mount.roll = numIn(input.roll_deg, 'roll_deg', -45, 45);
+  } else if (input.roll_deg !== undefined) {
     euler.setFromQuaternion(cam.quaternion, 'YXZ');
     euler.z = THREE.MathUtils.degToRad(numIn(input.roll_deg, 'roll_deg', -45, 45));
     cam.quaternion.setFromEuler(euler);
@@ -754,6 +860,8 @@ function sceneSummary() {
       focal_mm: Math.round(focalFromFov(shotCam.fov)),
       roll_deg: round3(THREE.MathUtils.radToDeg(euler.setFromQuaternion(shotCam.quaternion, 'YXZ').z)),
       moved_but_not_keyed: camDirty,
+      mount: { bone: state.mount.bone, look_at_bone: state.mount.lookAt, keep_level: state.mount.level },
+      key_positions_are: state.mount.bone ? 'relative to the mount bone' : 'world space',
       keys: track.keys.map((k) => ({ time: k.t, position: k.pos.map(round3), focal_mm: Math.round(focalFromFov(k.fov)), ease: k.ease })),
     },
     scene: { time_of_day: state.scene.tod, sun_heading: state.scene.azimuth, exposure: state.scene.exposure, fog: state.scene.fog },
@@ -779,6 +887,7 @@ const toolHandlers = {
   },
   set_camera: (i) => {
     poseCamera(shotCam, i);
+    syncLocalFromWorld();
     if (i.key) setKeyNow(); else camDirty = track.keys.length > 0;
     return i.key ? `Camera placed and keyed at ${state.time}s` : 'Camera placed (not keyed)';
   },
@@ -789,6 +898,8 @@ const toolHandlers = {
     for (const k of i.keys) {
       const t = clamp(snap(numIn(k.time, 'time')), 0, state.duration);
       poseCamera(scratchCam, k);
+      updateFrame();
+      toLocal(mountFrame, scratchCam, scratchCam);        // store the key relative to the mount
       const key = track.setKey(t, scratchCam);
       if (k.ease !== undefined) { if (!EASE_MODES.includes(k.ease)) throw new Error(`Unknown ease "${k.ease}"`); key.ease = k.ease; }
     }
@@ -812,6 +923,18 @@ const toolHandlers = {
     if (i.fog !== undefined) s.fog = numIn(i.fog, 'fog', 0, 0.15);
     applyScene();
     return JSON.stringify({ time_of_day: s.tod, sun_heading: s.azimuth, exposure: s.exposure, fog: s.fog });
+  },
+  mount_camera: (i) => {
+    if (!Object.keys(bones).length) throw new Error('The actor has no skeleton. Import a rigged model to mount the camera on it.');
+    if (i.preset !== undefined && i.preset !== 'none') return `${applyMountPreset(i.preset)} set: mounted on ${state.mount.bone}`;
+    for (const key of ['bone', 'look_at_bone']) if (i[key] && !bones[i[key]]) throw new Error(`No bone named "${i[key]}"`);
+    const next = {};
+    if (i.preset === 'none') Object.assign(next, { bone: null, lookAt: null, level: false });
+    if (i.bone !== undefined) next.bone = i.bone || null;
+    if (i.look_at_bone !== undefined) next.lookAt = i.look_at_bone || null;
+    if (i.keep_level !== undefined) next.level = !!i.keep_level;
+    setMount(next);
+    return JSON.stringify({ bone: state.mount.bone, look_at_bone: state.mount.lookAt, keep_level: state.mount.level });
   },
   move_actor: (i) => {
     if (i.position !== undefined) actorRoot.position.fromArray(vec3In(i.position, 'position'));
@@ -879,7 +1002,7 @@ const AI_KEY_STORE = 'cinematic.apikey.v1';
 const TOOL_LABELS = {
   get_scene: 'Reading the scene', set_time: 'Moving the playhead', set_timeline: 'Changing the timeline',
   set_camera: 'Placing the camera', set_camera_keys: 'Keying the camera', delete_camera_keys: 'Deleting camera keys',
-  set_scene: 'Adjusting sky and light', move_actor: 'Moving the actor', add_markers: 'Adding markers',
+  set_scene: 'Adjusting sky and light', mount_camera: 'Mounting the camera', move_actor: 'Moving the actor', add_markers: 'Adding markers',
   list_bones: 'Reading the skeleton', pose_bones: 'Posing bones', reset_pose: 'Resetting the pose', capture_view: 'Looking at the result',
 };
 const aiMessages = [];
@@ -976,6 +1099,7 @@ try {
 } catch { /* no autosave or it was unreadable: start fresh */ }
 applyScene();
 rebuildActors();
+syncMountUI();
 setMode('free');
 keysChanged();
 resize();
@@ -985,6 +1109,6 @@ tick();
 // Handle for automated checks and for poking at things from the console.
 window.app = {
   state, get track() { return track; }, get bones() { return bones; }, shotCam, freeCam, actorRoot,
-  setTime, setMode, setKeyNow, selectActor, renderStill, serialise, load, importFiles, execTool,
+  setTime, setMode, setKeyNow, setMount, applyMountPreset, selectActor, renderStill, serialise, load, importFiles, execTool,
   assistant: { send: aiSend, messages: aiMessages, useClient(c) { aiClientOverride = c; } },
 };
