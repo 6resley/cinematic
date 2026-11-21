@@ -26,6 +26,7 @@ const defaults = () => ({
   mount: { bone: null, lookAt: null, level: false, roll: 0 },   // what the shot camera rides on
   props: [],                                  // settings for attached props, by name: { name, bone, hidden }
   anim: { name: null, start: 0, speed: 1, loop: true, travel: true },   // which imported animation plays on the actor
+  next: { name: null, at: 2, blend: 0.25, speed: 1, loop: false },      // an animation that takes over from it part-way through
   pose: {},                                   // bone name -> rotation offset layered on top of the animation (or the imported pose)
   scene: { tod: 15, azimuth: 60, exposure: 1, fog: 0, grid: true },
 });
@@ -128,7 +129,11 @@ function collectBones() {
   bones = {};
   bindPose.clear();
   actorRoot.traverse((o) => {
-    if (o.isBone && !bones[o.name]) { bones[o.name] = o; bindPose.set(o.name, { q: o.quaternion.toArray(), p: o.position.toArray() }); }
+    if (o.isBone && !bones[o.name]) {
+      bones[o.name] = o;
+      const slot = () => ({ q: new THREE.Quaternion(), p: new THREE.Vector3() });
+      bindPose.set(o.name, { q: o.quaternion.toArray(), p: o.position.toArray(), a: slot(), b: slot() });
+    }
   });
   if (legacyPose) {                                  // poses saved by older versions were absolute rotations
     for (const [name, q] of Object.entries(legacyPose)) {
@@ -146,27 +151,46 @@ let legacyPose = null;
 
 const activeClip = () => (state.anim.name ? clipLibrary.get(state.anim.name) || null : null);
 
-/** Rebuild the actor for the current time: imported pose, then the animation, then pose offsets on top. */
-function applyActor() {
-  for (const [name, bind] of bindPose) {
-    bones[name].quaternion.fromArray(bind.q);
-    bones[name].position.fromArray(bind.p);
+const nextClip = () => (activeClip() && state.next.name ? clipLibrary.get(state.next.name) || null : null);
+const _ra = new THREE.Vector3(), _rqa = new THREE.Quaternion(), _rb = new THREE.Vector3(), _rqb = new THREE.Quaternion();
+
+/** Work out every bone's pose from one clip at a moment, into scratch slot 'a' or 'b'. */
+function poseFromClip(clip, seconds, loop, slot) {
+  for (const bind of bindPose.values()) { bind[slot].q.fromArray(bind.q); bind[slot].p.fromArray(bind.p); }
+  const frame = clip.frameAt(seconds, loop);
+  for (const track of clip.bones) {
+    const bind = bindPose.get(track.name);
+    if (!bind) continue;
+    if (!Clip.rotation(track, frame, bind[slot].q)) bind[slot].q.identity();
+    if (Clip.position(track, frame, _pa)) bind[slot].p.add(_pa);     // positions are shifts added to the model's own bone offset
   }
-  const clip = activeClip();
-  if (clip) {
-    const frame = clip.frameAt((state.time - state.anim.start) * state.anim.speed, state.anim.loop);
-    for (const track of clip.bones) {
-      const bone = bones[track.name];
-      if (!bone) continue;
-      if (!Clip.rotation(track, frame, bone.quaternion)) bone.quaternion.identity();
-      if (Clip.position(track, frame, _pa)) bone.position.add(_pa);   // positions are shifts added to the model's own bone offset
+}
+
+/** Rebuild the actor for the current time: imported pose, then the animation(s), then pose offsets on top. */
+function applyActor() {
+  const first = activeClip(), second = nextClip();
+  const since = state.time - state.next.at;                           // time since the second animation took over
+  const mix = second ? (state.next.blend > 1e-4 ? clamp(since / state.next.blend, 0, 1) : (since >= 0 ? 1 : 0)) : 0;
+  if (first && mix < 1) poseFromClip(first, (state.time - state.anim.start) * state.anim.speed, state.anim.loop, 'a');
+  if (second && mix > 0) poseFromClip(second, since * state.next.speed, state.next.loop, 'b');
+  for (const [name, bind] of bindPose) {
+    const bone = bones[name];
+    if (!first) { bone.quaternion.fromArray(bind.q); bone.position.fromArray(bind.p); }
+    else if (mix <= 0) { bone.quaternion.copy(bind.a.q); bone.position.copy(bind.a.p); }
+    else if (mix >= 1) { bone.quaternion.copy(bind.b.q); bone.position.copy(bind.b.p); }
+    else { bone.quaternion.slerpQuaternions(bind.a.q, bind.b.q, mix); bone.position.lerpVectors(bind.a.p, bind.b.p, mix); }
+  }
+  const origin = bones.tag_origin;
+  if (first && state.anim.travel && origin) {                         // carry the whole character the way the animations move
+    const handover = second ? Math.min(state.time, state.next.at) : state.time;
+    first.rootAt(Math.max(0, handover - state.anim.start) * state.anim.speed, state.anim.loop, _ra, _rqa);
+    if (second && since > 0) {                                        // the second one continues from where the first left him
+      second.rootAt(since * state.next.speed, state.next.loop, _rb, _rqb);
+      _ra.add(_rb.applyQuaternion(_rqa));
+      _rqa.multiply(_rqb);
     }
-    const origin = bones.tag_origin;
-    if (state.anim.travel && clip.root && origin) {         // carry the whole character the way the animation moves
-      clip.rootAt(Math.max(0, state.time - state.anim.start) * state.anim.speed, state.anim.loop, _pa, _bq);
-      origin.position.add(_pa);
-      origin.quaternion.multiply(_bq);
-    }
+    origin.position.add(_ra);
+    origin.quaternion.multiply(_rqa);
   }
   baseQuat.clear();
   for (const [name, d] of Object.entries(state.pose)) {
@@ -745,7 +769,7 @@ function serialise() {
   return {
     app: 'cinematic', version: 2,
     duration: state.duration, fps: state.fps, time: state.time, loop: state.loop, autoKey: state.autoKey,
-    markers: state.markers, scene: state.scene, pose: state.pose, mount: state.mount, anim: state.anim, props: state.props,
+    markers: state.markers, scene: state.scene, pose: state.pose, mount: state.mount, anim: state.anim, next: state.next, props: state.props,
     camera: { keys: track.toJSON(), rest: { pos: camLocal.position.toArray(), quat: camLocal.quaternion.toArray(), fov: shotCam.fov } },
     actor: { name: actors[1].name, pos: actorRoot.position.toArray(), quat: actorRoot.quaternion.toArray() },
   };
@@ -756,7 +780,7 @@ function load(data) {
   const d = defaults();
   Object.assign(state, d, {
     duration: data.duration ?? d.duration, fps: data.fps ?? d.fps, time: 0, loop: !!data.loop, autoKey: !!data.autoKey,
-    markers: data.markers ?? [], scene: { ...d.scene, ...data.scene }, pose: (data.version ?? 1) >= 2 ? { ...(data.pose ?? {}) } : {}, mount: { ...d.mount, ...data.mount }, anim: { ...d.anim, ...data.anim },
+    markers: data.markers ?? [], scene: { ...d.scene, ...data.scene }, pose: (data.version ?? 1) >= 2 ? { ...(data.pose ?? {}) } : {}, mount: { ...d.mount, ...data.mount }, anim: { ...d.anim, ...data.anim }, next: { ...d.next, ...data.next },
     props: Array.isArray(data.props) ? data.props.map((p) => ({ name: p.name, bone: p.bone ?? null, hidden: [...(p.hidden ?? [])] })) : [],
   });
   legacyPose = (data.version ?? 1) < 2 && data.pose && Object.keys(data.pose).length ? data.pose : null;
@@ -1117,6 +1141,16 @@ async function importAnimations(files) {
     + (unnamed ? ` · ${unnamed} have placeholder bone names and cannot drive a model` : '');
 }
 
+function setNext(next) {
+  Object.assign(state.next, next);
+  if (state.next.name && !clipLibrary.has(state.next.name)) state.next.name = null;
+  state.next.at = clamp(Number(state.next.at) || 0, 0, state.duration);
+  state.next.blend = clamp(Number(state.next.blend) || 0, 0, 2);
+  state.next.speed = clamp(Number(state.next.speed) || 1, 0.05, 4);
+  syncAnimUI();
+  scheduleAutosave();
+}
+
 function setAnimation(next) {
   Object.assign(state.anim, next);
   if (state.anim.name && !clipLibrary.has(state.anim.name)) state.anim.name = null;
@@ -1136,6 +1170,12 @@ function syncAnimUI() {
   $('anim-speed-out').textContent = `${state.anim.speed.toFixed(2)}×`;
   $('anim-loop').checked = state.anim.loop;
   $('anim-travel').checked = state.anim.travel;
+  const then = $('anim-next');
+  then.replaceChildren(new Option('Nothing', ''), ...names.map((n) => new Option(n, n)));
+  then.value = nextClip() ? state.next.name : '';
+  then.disabled = !activeClip();
+  $('anim-next-at').value = state.next.at;
+  $('anim-next-blend').value = state.next.blend;
   const clip = activeClip();
   $('anim-info').textContent = clip
     ? `${clip.duration.toFixed(2)} s at ${clip.framerate} fps · ${clip.bones.length} bones${clip.loop ? ' · made to loop' : ''}`
@@ -1157,8 +1197,22 @@ function rebuildAnimBar() {
   bar.textContent = clip.name;
   bar.title = `${clip.name} · ${length.toFixed(2)} s per pass`;
   row.append(bar);
+  const second = nextClip();
+  if (second) {                                                 // the animation that takes over
+    bar.style.width = `${Math.max(2, xOf(Math.min(end, state.next.at + state.next.blend)) - xOf(state.anim.start))}px`;
+    const length2 = second.duration / state.next.speed;
+    const end2 = state.next.loop ? state.duration : Math.min(state.duration, state.next.at + length2);
+    const bar2 = document.createElement('div');
+    bar2.className = 'tl-clip second';
+    bar2.style.left = `${xOf(state.next.at)}px`;
+    bar2.style.width = `${Math.max(2, xOf(end2) - xOf(state.next.at))}px`;
+    bar2.textContent = second.name;
+    bar2.title = `${second.name} takes over at ${state.next.at.toFixed(2)} s, blending for ${state.next.blend.toFixed(2)} s`;
+    row.append(bar2);
+  }
+  const lastRepeat = second ? state.next.at : state.duration;
   if (state.anim.loop && length > 0.05) {                       // a tick where each repeat begins
-    for (let t = state.anim.start + length; t < state.duration - 1e-6; t += length) {
+    for (let t = state.anim.start + length; t < lastRepeat - 1e-6; t += length) {
       const tick = document.createElement('div');
       tick.className = 'tl-clip-tick';
       tick.style.left = `${xOf(t)}px`;
@@ -1175,6 +1229,12 @@ $('anim-start').addEventListener('change', (e) => setAnimation({ start: Number(e
 $('anim-speed').addEventListener('input', (e) => setAnimation({ speed: Number(e.target.value) }));
 $('anim-loop').addEventListener('change', (e) => setAnimation({ loop: e.target.checked }));
 $('anim-travel').addEventListener('change', (e) => setAnimation({ travel: e.target.checked }));
+$('anim-next').addEventListener('change', (e) => {
+  const clip = clipLibrary.get(e.target.value);
+  setNext({ name: e.target.value || null, ...(clip ? { loop: clip.loop } : {}) });
+});
+$('anim-next-at').addEventListener('change', (e) => setNext({ at: Number(e.target.value) }));
+$('anim-next-blend').addEventListener('change', (e) => setNext({ blend: Number(e.target.value) }));
 
 // ------------------------------------------------------------------ render queue
 const jobs = [];
@@ -1390,7 +1450,7 @@ function sceneSummary() {
       has_skeleton: boneCount > 0, bone_count: boneCount, posed_bones: Object.keys(state.pose).length,
       bounds: { min: box.min.toArray().map(round3), max: box.max.toArray().map(round3) },
     },
-    animation: { ...state.anim, loaded: !!activeClip(), imported_count: clipLibrary.size },
+    animation: { ...state.anim, loaded: !!activeClip(), imported_count: clipLibrary.size, then: state.next.name, switch_at: state.next.at, blend: state.next.blend },
     props: props.map((p) => ({ name: p.name, attached_to: p.bone, parts: [...p.parts.keys()].map((k) => ({ part: k, shown: !p.hidden.has(k) })) })),
     markers: state.markers,
   };
@@ -1466,7 +1526,15 @@ const toolHandlers = {
     if (i.loop !== undefined) next.loop = !!i.loop;
     if (i.travel !== undefined) next.travel = !!i.travel;
     setAnimation(next);
-    return JSON.stringify(state.anim);
+    if (i.then !== undefined || i.switch_at !== undefined || i.blend !== undefined) {
+      if (i.then && !clipLibrary.has(i.then)) throw new Error(`No imported animation named "${i.then}". Call list_animations to see what is loaded.`);
+      const follow = {};
+      if (i.then !== undefined) { follow.name = i.then || null; if (i.then) follow.loop = clipLibrary.get(i.then).loop; }
+      if (i.switch_at !== undefined) follow.at = numIn(i.switch_at, 'switch_at', 0, state.duration);
+      if (i.blend !== undefined) follow.blend = numIn(i.blend, 'blend', 0, 2);
+      setNext(follow);
+    }
+    return JSON.stringify({ ...state.anim, then: state.next.name, switch_at: state.next.at, blend: state.next.blend });
   },
   set_prop: (i) => {
     const prop = props.find((p) => p.name === i.name);
@@ -1667,6 +1735,6 @@ tick();
 // Handle for automated checks and for poking at things from the console.
 window.app = {
   state, get track() { return track; }, get bones() { return bones; }, shotCam, freeCam, actorRoot,
-  setTime, setMode, setKeyNow, setMount, applyMountPreset, selectActor, renderStill, serialise, load, importFiles, importProp, get props() { return props; }, importAnimations, setAnimation, execTool, addJob, runQueue, get jobs() { return jobs; },
+  setTime, setMode, setKeyNow, setMount, applyMountPreset, selectActor, renderStill, serialise, load, importFiles, importProp, get props() { return props; }, importAnimations, setAnimation, setNext, execTool, addJob, runQueue, get jobs() { return jobs; },
   assistant: { send: aiSend, messages: aiMessages, useClient(c) { aiClientOverride = c; } },
 };

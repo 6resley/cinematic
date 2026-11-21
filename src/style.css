@@ -146,3 +146,5 @@ dialog#chooser::backdrop { background: #000a; }
 #q-list button { padding: 2px 7px; }
 .q-bar { position: absolute; left: 0; bottom: 0; height: 3px; width: var(--done, 0%); background: var(--accent); }
 .row input[type="text"] { grid-column: 2 / 4; font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: var(--radius); padding: 4px 8px; min-width: 0; }
+
+.tl-clip.second { background: #8f4a3f; border-color: #bd6b5b; }
