@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { decodeDDS, gameNormalToStandard, gameSpecToRoughness, alphaProfile } from '../src/dds.js';
+import { decodeDDS, gameNormalToStandard, gameSpecToRoughness, alphaProfile, applyCamo } from '../src/dds.js';
 
 function header(width, height, { fourcc = null, bits = 0 } = {}) {
   const h = new Uint8Array(128), v = new DataView(h.buffer);
@@ -93,4 +93,25 @@ test('alpha profile separates cut-out from solid textures', () => {
   assert.equal(cut.clear, 0.5); assert.equal(cut.solid, 0.5);
   const solid = alphaProfile({ data: new Uint8Array([0, 0, 0, 255, 0, 0, 0, 250]) });
   assert.equal(solid.clear, 0); assert.equal(solid.solid, 1);
+});
+
+test('camo: mid-grey paint leaves the base alone, and the mask controls how much paint takes', () => {
+  const grey = { width: 1, height: 1, data: new Uint8Array([128, 128, 128, 255]) };
+  const base = () => ({ width: 2, height: 1, data: new Uint8Array([100, 100, 100, 255, 100, 100, 100, 0]) });
+  const same = applyCamo(base(), grey);
+  assert.ok(Math.abs(same.data[0] - 100) <= 1);
+  const red = { width: 1, height: 1, data: new Uint8Array([255, 0, 0, 255]) };
+  const painted = applyCamo(base(), red);
+  assert.deepEqual([...painted.data.slice(0, 4)], [200, 0, 0, 255]);        // fully masked in: base x paint x 2
+  assert.deepEqual([...painted.data.slice(4, 8)], [100, 100, 100, 255]);    // masked out: untouched, made opaque
+});
+
+test('camo: the pattern repeats across the texture', () => {
+  const stripes = { width: 2, height: 1, data: new Uint8Array([255, 255, 255, 255, 0, 0, 0, 255]) };
+  const base = { width: 8, height: 1, data: new Uint8Array(32).fill(255) };
+  for (let i = 0; i < 8; i++) base.data.set([100, 100, 100, 255], i * 4);
+  const out = applyCamo(base, stripes, 2);
+  const v = [...Array(8)].map((_, i) => out.data[i * 4]);
+  assert.deepEqual(v.slice(0, 4), v.slice(4, 8));                           // two identical repeats
+  assert.ok(Math.max(...v) > 140 && Math.min(...v) < 60);                   // light and dark stripes both show
 });

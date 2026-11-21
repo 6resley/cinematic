@@ -113,3 +113,31 @@ export function alphaProfile(image) {
   const n = d.length / 4;
   return { clear: clear / n, solid: solid / n };
 }
+
+/**
+ * Paint a weapon camo onto decoded colour pixels, in place, the way the game's weapon materials do: the colour
+ * map is a neutral base whose alpha says how strongly each spot takes paint, and the small camo pattern is tiled
+ * across it and multiplied in (mid-grey leaves the base unchanged). Alpha is set to opaque afterwards.
+ */
+export function applyCamo(base, camo, repeats = 4) {
+  const d = base.data, c = camo.data, cw = camo.width, ch = camo.height;
+  for (let y = 0; y < base.height; y++) {
+    const fy = ((y + 0.5) / base.height) * repeats * ch - 0.5;
+    const y0 = Math.floor(fy), ty = fy - y0;
+    const ya = ((y0 % ch) + ch) % ch, yb = (ya + 1) % ch;
+    for (let x = 0; x < base.width; x++) {
+      const fx = ((x + 0.5) / base.width) * repeats * cw - 0.5;
+      const x0 = Math.floor(fx), tx = fx - x0;
+      const xa = ((x0 % cw) + cw) % cw, xb = (xa + 1) % cw;
+      const o = (y * base.width + x) * 4, mask = d[o + 3] / 255;
+      const p00 = (ya * cw + xa) * 4, p10 = (ya * cw + xb) * 4, p01 = (yb * cw + xa) * 4, p11 = (yb * cw + xb) * 4;
+      for (let k = 0; k < 3; k++) {
+        const top = c[p00 + k] + (c[p10 + k] - c[p00 + k]) * tx, bottom = c[p01 + k] + (c[p11 + k] - c[p01 + k]) * tx;
+        const paint = ((top + (bottom - top) * ty) / 255) * 2;                 // 1 means "leave the base as it is"
+        d[o + k] = Math.min(255, d[o + k] * (1 + (paint - 1) * mask));
+      }
+      d[o + 3] = 255;
+    }
+  }
+  return base;
+}

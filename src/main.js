@@ -6,7 +6,7 @@ import { CameraTrack, EASE_MODES } from './keys.js';
 import { FlyLook } from './flylook.js';
 import { toLocal, toWorld, reframeKeys, bodyAxes } from './mount.js';
 import { Clip } from './anim.js';
-import { decodeDDS, gameNormalToStandard, gameSpecToRoughness } from './dds.js';
+import { decodeDDS, gameNormalToStandard, gameSpecToRoughness, applyCamo } from './dds.js';
 import { frameTimes, subframeTimes, safeName, canMakeMp4, createMp4Sink, createPngSink } from './renderqueue.js';
 import { createClient, runTurn, describeError, MODEL } from './assistant.js';
 
@@ -873,19 +873,24 @@ async function bindRippedTextures(root, modelName, files) {
     (wanted[part[0]] ||= {})[Number(part[1].split('=')[1])] = part[2].replace(/^images\//, '').replace(/\.iwi$/i, '');
   }
   const made = new Map();
-  const texture = async (image, kind) => {
-    const key = `${kind}:${image}`;
+  const decode = async (image) => {
+    const file = byName.get(`${image.toLowerCase()}.dds`);
+    return file ? decodeDDS(new Uint8Array(await file.arrayBuffer())) : null;
+  };
+  // `camo` is the name of a weapon camo pattern to paint onto a colour map, or undefined
+  const texture = async (image, kind, camo) => {
+    const key = `${kind}:${image}:${camo || ''}`;
     if (made.has(key)) return made.get(key);
     let out = null;
-    const file = byName.get(`${image.toLowerCase()}.dds`);
-    if (file) {
-      try {
-        const pixels = decodeDDS(new Uint8Array(await file.arrayBuffer()));
+    try {
+      const pixels = await decode(image);
+      if (pixels) {
         if (kind === 'normal') gameNormalToStandard(pixels);
         if (kind === 'rough') gameSpecToRoughness(pixels);
+        if (kind === 'colour' && camo) { const pattern = await decode(camo); if (pattern) applyCamo(pixels, pattern); }
         out = dataTexture(pixels, kind === 'colour');
-      } catch { out = null; }
-    }
+      }
+    } catch { out = null; }
     made.set(key, out);
     return out;
   };
@@ -895,7 +900,8 @@ async function bindRippedTextures(root, modelName, files) {
   for (const mesh of meshes) {
     const m = mesh.material, w = wanted[m.name];
     if (!w) continue;
-    if (!m.map && w[2]) { const t = await texture(w[2], 'colour'); if (t) { m.map = t; m.color.set(0xffffff); bound++; } }
+    const camo = w[3] && /^weapon_camo/i.test(w[3]) ? w[3] : undefined;      // slot 3 holds the camo pattern on painted weapons
+    if (!m.map && w[2]) { const t = await texture(w[2], 'colour', camo); if (t) { m.map = t; m.color.set(0xffffff); bound++; } }
     if (!m.normalMap && w[5]) { const t = await texture(w[5], 'normal'); if (t) { m.normalMap = t; bound++; } }
     if (!m.roughnessMap && w[8]) { const t = await texture(w[8], 'rough'); if (t) { m.roughnessMap = t; m.roughness = 1; bound++; } }
     m.needsUpdate = true;
