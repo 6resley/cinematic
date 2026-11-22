@@ -478,13 +478,73 @@ const MOUNT_PRESETS = {
   gun: { label: 'Gun cam', bones: ['tag_weapon_right', 'j_gun', 'j_wrist_ri'], lookAt: 'j_head', level: false, focal: 16, offset: [0.55, 0.10, 0.05] },
   helmet: { label: 'Helmet cam', bones: ['j_head'], lookAt: null, level: false, focal: 18, offset: [0.25, 0.08, 0] },   // just in front of the face, clear of a hood
   shoulder: { label: 'Over shoulder', bones: ['j_spine4', 'j_spineupper'], lookAt: null, level: true, focal: 28, offset: [-0.5, 0.22, 0.28] },
+  barrel: { label: 'Barrel POV', bones: ['tag_weapon_right', 'j_gun', 'j_wrist_ri'], lookAt: null, level: false, focal: 16, offset: [0.55, 0.10, 0.05] },
   boot: { label: 'Boot cam', bones: ['j_ankle_ri', 'j_ball_ri'], lookAt: 'j_head', level: true, focal: 14, offset: [0.45, 0.04, 0.2] },
 };
 
 /** Mount the camera with a ready-made placement. offset is [forward, up, right] in metres from the mount. */
+/**
+ * Where an attached weapon's barrel is, measured from the visible parts of the model: the muzzle end, the direction
+ * the barrel points, and "up" on the gun. Null if the prop has nothing visible.
+ */
+function gunShape(prop) {
+  const bone = bones[prop.bone];
+  actorRoot.updateMatrixWorld(true);
+  propWorld.updateMatrixWorld(true);
+  const inv = new THREE.Matrix4().copy(bone.matrixWorld).invert(), box = new THREE.Box3(), v = new THREE.Vector3(), pts = [];
+  for (const root of [prop.carrier, prop.skinned]) root.traverse((o) => {
+    if (!o.isMesh || !o.visible || !o.geometry?.attributes.position) return;
+    const pos = o.geometry.attributes.position, step = Math.max(1, Math.floor(pos.count / 600));
+    for (let i = 0; i < pos.count; i += step) { o.getVertexPosition(i, v); box.expandByPoint(v.applyMatrix4(o.matrixWorld).applyMatrix4(inv)); pts.push(v.toArray()); }
+  });
+  if (box.isEmpty()) return null;
+  const size = box.getSize(new THREE.Vector3()).toArray(), lo = box.min.toArray(), hi = box.max.toArray();
+  const axis = size.indexOf(Math.max(...size));
+  // The muzzle is the thin end and the stock the bulky one: compare how wide the model is near each end.
+  const o1 = (axis + 1) % 3, o2 = (axis + 2) % 3, band = size[axis] * 0.12;
+  const girth = (near) => {
+    let a0 = Infinity, a1 = -Infinity, b0 = Infinity, b1 = -Infinity;
+    for (const q of pts) if (near(q[axis])) { a0 = Math.min(a0, q[o1]); a1 = Math.max(a1, q[o1]); b0 = Math.min(b0, q[o2]); b1 = Math.max(b1, q[o2]); }
+    return a1 >= a0 ? (a1 - a0) + (b1 - b0) : Infinity;
+  };
+  const sign = girth((x) => x > hi[axis] - band) <= girth((x) => x < lo[axis] + band) ? 1 : -1;
+  const tip = box.getCenter(new THREE.Vector3()).toArray(), back = [...tip];
+  const atTip = sign > 0 ? (x) => x > hi[axis] - band : (x) => x < lo[axis] + band, n = pts.filter((q) => atTip(q[axis]));
+  for (const o of [o1, o2]) tip[o] = back[o] = n.reduce((m, q) => m + q[o], 0) / n.length;      // the barrel's own line, not the middle of scope, grip and bipod
+  tip[axis] = sign > 0 ? hi[axis] : lo[axis];
+  back[axis] = sign > 0 ? lo[axis] : hi[axis];
+  const muzzle = bone.localToWorld(new THREE.Vector3().fromArray(tip)), butt = bone.localToWorld(new THREE.Vector3().fromArray(back));
+  const dir = muzzle.clone().sub(butt), length = dir.length();
+  dir.normalize();
+  const up = new THREE.Vector3(0, 1, 0).addScaledVector(dir, -dir.y).normalize();
+  return { muzzle, dir, up, length };
+}
+
 function applyMountPreset(id) {
   const preset = MOUNT_PRESETS[id];
   if (!preset) throw new Error(`Unknown mount preset "${id}"`);
+  if (id === 'gun' || id === 'barrel') {                                   // sit on the weapon itself when one is attached
+    const prop = props.find((p) => p.bone && bones[p.bone]);
+    const gun = prop && gunShape(prop);
+    if (gun) {
+      const face = bones.j_head;
+      setMount({ bone: prop.bone, lookAt: null, level: false, roll: 0 });  // fixed to the gun: it tilts and shakes with it
+      if (id === 'gun') {                                                  // on the muzzle, looking back down the barrel at him
+        shotCam.position.copy(gun.muzzle).addScaledVector(gun.dir, 0.1).addScaledVector(gun.up, 0.1);
+        shotCam.up.copy(gun.up);
+        shotCam.lookAt(face ? face.getWorldPosition(new THREE.Vector3()) : gun.muzzle.clone().addScaledVector(gun.dir, -1).addScaledVector(gun.up, 0.07));
+      } else {                                                             // behind the muzzle, looking where the barrel points
+        shotCam.position.copy(gun.muzzle).addScaledVector(gun.dir, -Math.min(0.7, gun.length * 0.5)).addScaledVector(gun.up, 0.12);
+        shotCam.up.copy(gun.up);
+        shotCam.lookAt(gun.muzzle.clone().addScaledVector(gun.dir, 4));
+      }
+      shotCam.up.set(0, 1, 0);
+      shotCam.fov = fovFromFocal(id === 'gun' ? 14 : 18);
+      cameraEdited();
+      return `${preset.label} (fixed to ${prop.name})`;
+    }
+    if (id === 'barrel') throw new Error('Barrel POV needs the weapon: use Import prop to attach it to the character first.');
+  }
   const bone = preset.bones.find((b) => bones[b]);
   const left = bones.j_shoulder_le || bones.j_clavicle_le, right = bones.j_shoulder_ri || bones.j_clavicle_ri;
   if (!bone || !left || !right) throw new Error('This model does not have the bones that preset needs. Import a rigged character first.');

@@ -142,11 +142,11 @@ export const TOOLS = [
   },
   {
     name: 'mount_camera',
-    description: 'Mount the shot camera on a bone so it rides with the character, or change how it is mounted. Presets place it for you: gun (on the weapon hand, wide lens, aimed at the face), helmet (at the eyes), shoulder (behind the right shoulder), boot (low by the right foot, aimed at the face). preset "none" unmounts it. The camera does not jump when the mount changes.',
+    description: 'Mount the shot camera on a bone so it rides with the character, or change how it is mounted. Presets place it for you: gun (fixed to the muzzle of the attached weapon, looking back down the barrel at the face; without a weapon prop it rides the weapon hand instead), barrel (fixed on the weapon behind the muzzle, looking where the barrel points; needs a weapon prop), helmet (at the eyes), shoulder (behind the right shoulder), boot (low by the right foot, aimed at the face). preset "none" unmounts it. The camera does not jump when the mount changes.',
     input_schema: {
       type: 'object',
       properties: {
-        preset: { type: 'string', enum: ['gun', 'helmet', 'shoulder', 'boot', 'none'] },
+        preset: { type: 'string', enum: ['gun', 'barrel', 'helmet', 'shoulder', 'boot', 'none'] },
         bone: { type: ['string', 'null'], description: 'Bone to ride on, or null to unmount.' },
         look_at_bone: { type: ['string', 'null'], description: 'Bone the camera stays aimed at, or null to aim freely.' },
         keep_level: { type: 'boolean', description: 'True rides the bone position only so the horizon stays level; false also tilts and shakes with the bone.' },
