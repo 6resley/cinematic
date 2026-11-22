@@ -34,7 +34,13 @@
     </header>
 
     <aside id="actors">
-      <h2>Scene</h2>
+      <h2>Library</h2>
+      <select id="lib-character" title="Characters found in the library folder"></select>
+      <select id="lib-weapon" title="Weapons found in the library folder"></select>
+      <select id="lib-map" title="Maps found in the library folder"></select>
+      <button id="btn-lib-rescan" title="Look in the library folder again after adding files">Rescan</button>
+      <p class="hint" id="lib-info"></p>
+      <h2 style="margin-top:16px">Scene</h2>
       <ul id="actor-list"></ul>
       <button id="btn-place-actor" title="Stand the character on whatever the middle of the view is pointing at">Place actor here</button>
       <p class="hint">Select an item, then in Free mode press <kbd>W</kbd> to move or <kbd>E</kbd> to rotate it.</p>

@@ -1184,7 +1184,7 @@ function serialise() {
   return {
     app: 'cinematic', version: 2,
     duration: state.duration, fps: state.fps, time: state.time, loop: state.loop, autoKey: state.autoKey,
-    markers: state.markers, scene: state.scene, pose: state.pose, poseKeys: state.poseKeys, look: state.look, dof: state.dof, queue: jobs.map((j) => ({ ...j, status: j.status === 'rendering' ? 'waiting' : j.status })), mount: state.mount, anim: state.anim, next: state.next, chain: state.chain, props: state.props,
+    markers: state.markers, scene: state.scene, pose: state.pose, library: { ...libraryLoaded }, poseKeys: state.poseKeys, look: state.look, dof: state.dof, queue: jobs.map((j) => ({ ...j, status: j.status === 'rendering' ? 'waiting' : j.status })), mount: state.mount, anim: state.anim, next: state.next, chain: state.chain, props: state.props,
     camera: { keys: track.toJSON(), rest: { pos: camLocal.position.toArray(), quat: camLocal.quaternion.toArray(), fov: shotCam.fov } },
     actor: { name: actors[1].name, pos: actorRoot.position.toArray(), quat: actorRoot.quaternion.toArray() },
   };
@@ -1295,7 +1295,7 @@ $('file-open').addEventListener('change', async (e) => {
   const file = e.target.files[0];
   e.target.value = '';
   if (!file) return;
-  try { load(JSON.parse(await file.text())); setStatus(`Opened ${file.name}`); }
+  try { await openProject(JSON.parse(await file.text())); setStatus(`Opened ${file.name}`); }
   catch (err) { setStatus(`Could not open ${file.name}: ${err.message}`); }
 });
 $('btn-new').addEventListener('click', () => {
@@ -2451,10 +2451,114 @@ function tick() {
 
 new ResizeObserver(resize).observe(viewEl);
 new ResizeObserver(resize).observe(tracksEl);
+// ---- library: the folder of ripped models, maps and animations beside the app, offered as drop-downs
+const libraryIndex = new Map();                       // lower-case path -> real path
+const libraryLoaded = { character: null, weapon: null, map: null };
+const libraryLists = { character: [], weapon: [], map: [] };
+const baseName = (p) => p.split('/').pop().replace(/\.(glb|gltf)$/i, '');
+
+async function scanLibrary() {
+  let files = [];
+  try { files = (await (await fetch('/library/index.json', { cache: 'no-store' })).json()).files || []; } catch { files = []; }
+  libraryIndex.clear();
+  for (const f of files) libraryIndex.set(f.path.toLowerCase(), f.path);
+  const models = files.map((f) => f.path).filter((p) => /\.glb$/i.test(p));
+  const isMap = (p) => libraryIndex.has(p.replace(/\.glb$/i, '_report.txt').toLowerCase());
+  libraryLists.map = models.filter(isMap);
+  libraryLists.weapon = models.filter((p) => !isMap(p) && /^weapon_/i.test(baseName(p)));
+  const bodies = models.filter((p) => !isMap(p) && /^mp_body_/i.test(baseName(p)));
+  const merged = bodies.filter((p) => /_with_head$/i.test(baseName(p)));
+  libraryLists.character = merged.length ? merged : bodies;      // complete characters (body and head) when there are any
+  for (const kind of ['character', 'weapon', 'map']) {
+    const sel = $(`lib-${kind}`), label = { character: 'Character', weapon: 'Weapon', map: 'Map' }[kind];
+    libraryLists[kind].sort((a, b) => baseName(a).localeCompare(baseName(b)));
+    sel.replaceChildren(new Option(libraryLists[kind].length ? `${label}…` : `${label}: none in library`, ''), ...libraryLists[kind].map((p) => new Option(baseName(p), p)));
+    sel.disabled = !libraryLists[kind].length;
+    sel.value = libraryLoaded[kind] && libraryLists[kind].includes(libraryLoaded[kind]) ? libraryLoaded[kind] : '';
+  }
+  const anims = files.map((f) => f.path).filter((p) => /\.anim\.json$/i.test(p));
+  $('lib-info').textContent = files.length
+    ? `${libraryLists.character.length} characters, ${libraryLists.weapon.length} weapons, ${libraryLists.map.length} maps, ${anims.length} animations`
+    : 'Empty. Copy your ripped folders into the "library" folder next to the app, then press Rescan.';
+  return anims;
+}
+
+/** Fetch a model from the library with the textures its list names, as files the importers understand. */
+async function libraryFiles(modelPath) {
+  const dir = modelPath.includes('/') ? modelPath.slice(0, modelPath.lastIndexOf('/') + 1) : '';
+  const wanted = [modelPath];
+  const list = libraryIndex.get(`${dir}${baseName(modelPath)}_textures.txt`.toLowerCase());
+  if (list) {
+    wanted.push(list);
+    const text = await (await fetch(`/library/${encodeURI(list)}`)).text();
+    for (const line of text.split(/\r?\n/)) {
+      const image = line.split('\t')[2];
+      if (!image) continue;
+      const hit = libraryIndex.get(`${dir}textures/${image.replace(/^images\//, '').replace(/\.iwi$/i, '')}.dds`.toLowerCase());
+      if (hit && !wanted.includes(hit)) wanted.push(hit);
+    }
+  }
+  const out = new Array(wanted.length);
+  let next = 0, done = 0;
+  await Promise.all(Array.from({ length: 12 }, async () => {
+    while (next < wanted.length) {
+      const i = next++, p = wanted[i];
+      const blob = await (await fetch(`/library/${p.split('/').map(encodeURIComponent).join('/')}`)).blob();
+      out[i] = new File([blob], p.split('/').pop());
+      if (++done % 50 === 0) setStatus(`Reading ${baseName(modelPath)} from the library… ${done} of ${wanted.length} files`);
+    }
+  }));
+  return out;
+}
+
+async function loadFromLibrary(kind, modelPath) {
+  if (!modelPath) return;
+  const name = baseName(modelPath);
+  setStatus(`Reading ${name} from the library…`);
+  const files = await libraryFiles(modelPath);
+  if (kind === 'character') await importFiles(files, name);
+  else if (kind === 'map') await importMap(files, name);
+  else {
+    const old = libraryLoaded.weapon && props.find((p) => p.name === baseName(libraryLoaded.weapon));
+    if (old && old.name !== name) removeProp(old);          // one library weapon in his hands at a time
+    await importProp(files, name);
+  }
+  libraryLoaded[kind] = modelPath;
+  $(`lib-${kind}`).value = modelPath;
+  scheduleAutosave();
+}
+
+/** Open a project: bring in the library items it was made with, then apply its settings. */
+async function openProject(data) {
+  const want = data?.library || {};
+  for (const kind of ['character', 'weapon', 'map']) {
+    const p = want[kind] && libraryIndex.get(String(want[kind]).toLowerCase());
+    if (p && libraryLoaded[kind] !== p) await loadFromLibrary(kind, p);
+  }
+  load(data);
+}
+
+async function loadLibraryAnimations(paths) {
+  if (!paths.length) return;
+  const files = await Promise.all(paths.map(async (p) => new File([await (await fetch(`/library/${p.split('/').map(encodeURIComponent).join('/')}`)).blob()], p.split('/').pop())));
+  await importAnimations(files);
+}
+
+for (const kind of ['character', 'weapon', 'map']) {
+  $(`lib-${kind}`).addEventListener('change', (e) => loadFromLibrary(kind, e.target.value).catch((err) => setStatus(`Could not load from the library: ${err.message}`)));
+}
+$('btn-lib-rescan').addEventListener('click', async () => { await loadLibraryAnimations(await scanLibrary()); setStatus('Library rescanned'); });
+
+let savedSession = null;
 try {
   const saved = localStorage.getItem(AUTOSAVE_KEY);
-  if (saved) { load(JSON.parse(saved)); setStatus('Restored your last session'); }
+  if (saved) { savedSession = JSON.parse(saved); load(savedSession); setStatus('Restored your last session'); }
 } catch { /* no autosave or it was unreadable: start fresh */ }
+scanLibrary().then(async (anims) => {                  // then bring back the models, map and animations the last session used
+  await loadLibraryAnimations(anims);
+  if (savedSession?.library && Object.values(savedSession.library).some(Boolean)) { await openProject(savedSession); setStatus('Restored your last session with its models'); }
+  else if (anims.length) syncAnimUI();
+}).catch(() => {});
 applyScene();
 rebuildActors();
 syncMountUI();
@@ -2474,6 +2578,6 @@ tick();
 // Handle for automated checks and for poking at things from the console.
 window.app = {
   state, get track() { return track; }, get bones() { return bones; }, shotCam, freeCam, actorRoot,
-  setTime, setMode, setKeyNow, setMount, applyMountPreset, selectActor, renderStill, serialise, load, importFiles, importProp, get props() { return props; }, importAnimations, setAnimation, setNext, setChain, keyPose, setPoseBone, importSky, importMap, placeActorAtView, mapRoot, stepHistory, flushAutosave, keyFocus, focusDistance, gizmo, get poseKeys() { return state.poseKeys; }, execTool, addJob, runQueue, get jobs() { return jobs; },
+  setTime, setMode, setKeyNow, setMount, applyMountPreset, selectActor, renderStill, serialise, load, importFiles, importProp, get props() { return props; }, importAnimations, setAnimation, setNext, setChain, keyPose, setPoseBone, scanLibrary, loadFromLibrary, openProject, libraryLists, libraryLoaded, importSky, importMap, placeActorAtView, mapRoot, stepHistory, flushAutosave, keyFocus, focusDistance, gizmo, get poseKeys() { return state.poseKeys; }, execTool, addJob, runQueue, get jobs() { return jobs; },
   assistant: { send: aiSend, messages: aiMessages, useClient(c) { aiClientOverride = c; } },
 };
