@@ -31,6 +31,7 @@ const defaults = () => ({
   props: [],                                  // settings for attached props, by name: { name, bone, hidden }
   anim: { name: null, start: 0, speed: 1, loop: true, travel: true, ground: true },   // which imported animation plays on the actor
   next: { name: null, at: 2, blend: 0.25, speed: 1, loop: false },
+  path: [],                                   // a route for the character to follow: [{ t, pos }]; replaces the animation's own travel
   chain: [],                                  // more animations after that one, each { name, at, blend, speed, loop }      // an animation that takes over from it part-way through
   dof: { blur: 0, bone: '', distance: 3, keys: [] },   // depth of field: how much blur, and what stays sharp (a bone, or a keyed distance)
   poseKeys: [],                               // poses keyed over time: [{ t, pose: { bone: offset } }]
@@ -320,7 +321,14 @@ function applyActor() {
     else { bone.quaternion.slerpQuaternions(bind.a.q, bind.b.q, mix); bone.position.lerpVectors(bind.a.p, bind.b.p, mix); }
   }
   const origin = bones.tag_origin;
-  if (first && state.anim.travel && origin) {                         // carry the whole character the way the animations move
+  const route = state.path.length >= 2;
+  if (route) {                                                        // a route through the scene: he follows it and faces along it
+    pathPoint(state.time, actorRoot.position);
+    pathPoint(state.time - 0.12, _ra); pathPoint(state.time + 0.12, _rb);
+    _rb.sub(_ra); _rb.y = 0;
+    if (_rb.lengthSq() > 1e-8) actorRoot.rotation.set(0, Math.atan2(-_rb.z, _rb.x), 0);
+  }
+  if (first && state.anim.travel && origin && !route) {               // carry the whole character the way the animations move
     _ra.set(0, 0, 0); _rqa.identity();
     for (let k = 0; k <= at; k++) {                                   // each one continues from where the one before left him
       const s = seq[k], until = k < at ? seq[k + 1].at : state.time;
@@ -343,6 +351,31 @@ function applyActor() {
   }
 }
 const applyPose = applyActor;
+
+/** Where the route puts him at a time: straight runs between its points, holding at the ends. */
+function pathPoint(time, out) {
+  const keys = state.path;
+  if (time <= keys[0].t) return out.fromArray(keys[0].pos);
+  const last = keys[keys.length - 1];
+  if (time >= last.t) return out.fromArray(last.pos);
+  let i = 0;
+  while (keys[i + 1].t <= time) i++;
+  const a = keys[i], b = keys[i + 1], u = (time - a.t) / (b.t - a.t);
+  return out.set(a.pos[0] + (b.pos[0] - a.pos[0]) * u, a.pos[1] + (b.pos[1] - a.pos[1]) * u, a.pos[2] + (b.pos[2] - a.pos[2]) * u);
+}
+
+/** Set the route from points; times are worked out from distance and speed unless a point gives its own. */
+function setPath(points, speed = 6) {
+  let t = 0;
+  state.path = points.map((p, n) => {
+    if (n) { const q = points[n - 1].pos, d = Math.hypot(p.pos[0] - q[0], p.pos[1] - q[1], p.pos[2] - q[2]); t = p.t !== undefined ? p.t : t + d / (p.speed || speed); }
+    else t = p.t || 0;
+    return { t: +t.toFixed(3), pos: p.pos.map(Number) };
+  });
+  applyTrack();
+  scheduleAutosave();
+  return state.path;
+}
 
 // ---- ground contact: animations are made for the game's uneven floors, so a hand or foot can sink into flat ground
 const LIMBS = [['j_shoulder_le', 'j_elbow_le', 'j_wrist_le'], ['j_shoulder_ri', 'j_elbow_ri', 'j_wrist_ri'], ['j_hip_le', 'j_knee_le', 'j_ankle_le'], ['j_hip_ri', 'j_knee_ri', 'j_ankle_ri']];
@@ -1283,7 +1316,7 @@ function serialise() {
   return {
     app: 'cinematic', version: 2,
     duration: state.duration, fps: state.fps, time: state.time, loop: state.loop, autoKey: state.autoKey,
-    markers: state.markers, scene: state.scene, pose: state.pose, library: { ...libraryLoaded }, poseKeys: state.poseKeys, look: state.look, dof: state.dof, queue: jobs.map((j) => ({ ...j, status: j.status === 'rendering' ? 'waiting' : j.status })), mount: state.mount, anim: state.anim, next: state.next, chain: state.chain, props: state.props,
+    markers: state.markers, scene: state.scene, pose: state.pose, library: { ...libraryLoaded }, poseKeys: state.poseKeys, look: state.look, dof: state.dof, queue: jobs.map((j) => ({ ...j, status: j.status === 'rendering' ? 'waiting' : j.status })), mount: state.mount, anim: state.anim, next: state.next, chain: state.chain, path: state.path, props: state.props,
     camera: { keys: track.toJSON(), rest: { pos: camLocal.position.toArray(), quat: camLocal.quaternion.toArray(), fov: shotCam.fov } },
     actor: { name: actors[1].name, pos: actorRoot.position.toArray(), quat: actorRoot.quaternion.toArray() },
   };
@@ -1297,7 +1330,7 @@ function load(data) {
     markers: data.markers ?? [], scene: { ...d.scene, ...data.scene }, pose: (data.version ?? 1) >= 2 ? { ...(data.pose ?? {}) } : {}, poseKeys: Array.isArray(data.poseKeys) ? data.poseKeys.map((k) => ({ t: k.t, pose: { ...k.pose } })).sort((x, y) => x.t - y.t) : [],
     look: { ...d.look, ...data.look, tint: [...(data.look?.tint ?? d.look.tint)] },
     dof: { ...d.dof, ...data.dof, keys: Array.isArray(data.dof?.keys) ? data.dof.keys.map((k) => ({ t: k.t, distance: k.distance })).sort((x, y) => x.t - y.t) : [] },
-    mount: { ...d.mount, ...data.mount }, anim: { ...d.anim, ...data.anim }, next: { ...d.next, ...data.next }, chain: Array.isArray(data.chain) ? data.chain.map((c) => ({ ...c })) : [],
+    mount: { ...d.mount, ...data.mount }, anim: { ...d.anim, ...data.anim }, next: { ...d.next, ...data.next }, chain: Array.isArray(data.chain) ? data.chain.map((c) => ({ ...c })) : [], path: Array.isArray(data.path) ? data.path.map((k) => ({ t: k.t, pos: [...k.pos] })) : [],
     props: Array.isArray(data.props) ? data.props.map((p) => ({ name: p.name, bone: p.bone ?? null, hidden: [...(p.hidden ?? [])] })) : [],
   });
   legacyPose = (data.version ?? 1) < 2 && data.pose && Object.keys(data.pose).length ? data.pose : null;
@@ -2385,6 +2418,12 @@ const toolHandlers = {
     syncPropsUI();
     return JSON.stringify({ name: prop.name, attached_to: prop.bone, hidden: [...prop.hidden] });
   },
+  set_actor_path: (i) => {
+    if (!Array.isArray(i.points)) throw new Error('points must be a list');
+    if (i.points.length === 1) throw new Error('A route needs at least two points (or none to clear it)');
+    const path = setPath(i.points.map((p) => ({ pos: vec3In(p.position, 'position'), t: p.time, speed: p.speed })), i.speed ?? 6);
+    return path.length ? `Route of ${path.length} points, arriving at ${path[path.length - 1].t}s` : 'Route cleared';
+  },
   move_actor: (i) => {
     if (i.position !== undefined) actorRoot.position.fromArray(vec3In(i.position, 'position'));
     if (i.heading_deg !== undefined) actorRoot.rotation.set(0, THREE.MathUtils.degToRad(numIn(i.heading_deg, 'heading_deg')), 0);
@@ -2704,8 +2743,16 @@ syncPlayButton();
 tick();
 
 // Handle for automated checks and for poking at things from the console.
+/** First solid thing along a ray through the map (or the plain ground): { point, distance, material } or null. */
+function probe(origin, direction, far = 500) {
+  mapRoot.updateMatrixWorld(true);
+  _walkRay.set(_walkFrom.fromArray(origin), _walkDir.fromArray(direction).normalize());
+  const hit = firstSolidHit(far);
+  return hit ? { point: hit.point.toArray().map((v) => +v.toFixed(3)), distance: +hit.distance.toFixed(3), material: hit.object.material?.name || '' } : null;
+}
 window.app = {
+  probe,
   state, get track() { return track; }, get bones() { return bones; }, shotCam, freeCam, actorRoot,
-  setTime, setMode, setKeyNow, setMount, applyMountPreset, selectActor, renderStill, serialise, load, importFiles, importProp, get props() { return props; }, importAnimations, setAnimation, setNext, setChain, keyPose, setPoseBone, scanLibrary, loadFromLibrary, openProject, libraryLists, libraryLoaded, importSky, importMap, placeActorAtView, mapRoot, setWalk, get walking() { return walking; }, stepHistory, flushAutosave, keyFocus, focusDistance, gizmo, get poseKeys() { return state.poseKeys; }, execTool, addJob, runQueue, get jobs() { return jobs; },
+  setTime, setMode, setKeyNow, setMount, applyMountPreset, selectActor, renderStill, serialise, load, importFiles, importProp, get props() { return props; }, importAnimations, setAnimation, setNext, setChain, keyPose, setPoseBone, setPath, scanLibrary, loadFromLibrary, openProject, libraryLists, libraryLoaded, importSky, importMap, placeActorAtView, mapRoot, setWalk, get walking() { return walking; }, stepHistory, flushAutosave, keyFocus, focusDistance, gizmo, get poseKeys() { return state.poseKeys; }, execTool, addJob, runQueue, get jobs() { return jobs; },
   assistant: { send: aiSend, messages: aiMessages, useClient(c) { aiClientOverride = c; } },
 };

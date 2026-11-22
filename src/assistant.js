@@ -157,6 +157,11 @@ export const TOOLS = [
     },
   },
   {
+    name: 'set_actor_path',
+    description: 'Give the character a route to run: a list of points in metres (feet position). He moves along it in straight runs and turns to face the way he is going, with the playing animation on the spot (the animation\'s own travel is ignored while a route exists). Times come from distance and speed unless a point gives a time. Pass an empty list to clear the route.',
+    input_schema: { type: 'object', properties: { points: { type: 'array', items: { type: 'object', properties: { position: vec3, time: { type: 'number' }, speed: { type: 'number', description: 'Metres per second for the run up to this point.' } }, required: ['position'] } }, speed: { type: 'number', description: 'Default metres per second (6 is a sprint, 3.5 for stairs).' } }, required: ['points'] },
+  },
+  {
     name: 'move_actor',
     description: 'Move the actor on the ground and/or turn it to face a compass heading in degrees.',
     input_schema: { type: 'object', properties: { position: vec3, heading_deg: { type: 'number' } } },
