@@ -1473,6 +1473,7 @@ function mapMaterialKind(name) {
   return 'solid';
 }
 
+const cutoutChecked = new WeakMap();
 async function importMap(files, preferName) {
   const loaded = await loadModelFolder(files, preferName);
   if (!loaded) return null;
@@ -1484,12 +1485,21 @@ async function importMap(files, preferName) {
     meshes++;
     o.castShadow = true; o.receiveShadow = true;
     for (const m of Array.isArray(o.material) ? o.material : [o.material]) {
-      const kind = mapMaterialKind(m.name);
+      let kind = mapMaterialKind(m.name);
+      if (kind === 'solid' && /^mc\//.test(m.name) && m.map?.image?.data) {   // placed models (trees, bushes, fences): see-through parts are in the texture
+        if (!cutoutChecked.has(m)) {
+          const d = m.map.image.data, step = Math.max(4, Math.floor(d.length / 4 / 4000) * 4);
+          let clear = 0, n = 0;
+          for (let i = 3; i < d.length; i += step) { n++; if (d[i] < 40) clear++; }
+          cutoutChecked.set(m, clear / n > 0.04);
+        }
+        if (cutoutChecked.get(m)) kind = 'cutout';
+      }
       if (kind === 'hidden') { o.visible = false; continue; }
       if (kind === 'decal') {                              // stains, prints, lettering: laid over the surface beneath
         Object.assign(m, { transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2, alphaTest: 0.02 });
         o.castShadow = false; o.renderOrder = 2;
-      } else if (kind === 'cutout') { m.alphaTest = 0.5; m.transparent = false; }   // fences, wires, grates
+      } else if (kind === 'cutout') { m.alphaTest = 0.5; m.transparent = false; m.alphaToCoverage = true; }   // fences, wires, grates
       else if (kind === 'glass') { Object.assign(m, { transparent: true, opacity: 0.35, depthWrite: false, roughness: 0.1 }); o.castShadow = false; o.renderOrder = 3; }
       for (const key of ['map', 'normalMap', 'roughnessMap']) if (m[key]) { m[key].wrapS = m[key].wrapT = THREE.RepeatWrapping; m[key].needsUpdate = true; }   // world textures tile
     }
