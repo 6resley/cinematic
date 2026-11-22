@@ -8,6 +8,8 @@ import { toLocal, toWorld, reframeKeys, bodyAxes } from './mount.js';
 import { Clip } from './anim.js';
 import { decodeDDS, gameNormalToStandard, gameSpecToRoughness, applyCamo } from './dds.js';
 import { twoBoneReach } from './ik.js';
+import { RGBELoader } from 'three/addons/loaders/RGBELoader.js';
+import { createWeather, WEATHER } from './weather.js';
 import { frameTimes, subframeTimes, safeName, canMakeMp4, createMp4Sink, createPngSink, lensOffsets, addSample, resolveSamples, focusAt } from './renderqueue.js';
 import { createClient, runTurn, describeError, MODEL } from './assistant.js';
 
@@ -31,7 +33,7 @@ const defaults = () => ({
   dof: { blur: 0, bone: '', distance: 3, keys: [] },   // depth of field: how much blur, and what stays sharp (a bone, or a keyed distance)
   poseKeys: [],                               // poses keyed over time: [{ t, pose: { bone: offset } }]
   pose: {},                                   // bone name -> rotation offset layered on top of the animation (or the imported pose)
-  scene: { tod: 15, azimuth: 60, exposure: 1, fog: 0, grid: true },
+  scene: { tod: 15, azimuth: 60, exposure: 1, fog: 0, grid: true, weather: 'clear' },
 });
 const state = defaults();
 let track = new CameraTrack();
@@ -353,6 +355,9 @@ const NIGHT = new THREE.Color(0x0a0f1c), HORIZON = new THREE.Color(0xd98f5c), DA
 const SUN_LOW = new THREE.Color(0xffa860), SUN_HIGH = new THREE.Color(0xfff4e6), MOON = new THREE.Color(0x9bb8ff);
 const sky = new THREE.Color();
 scene.background = sky;
+const weather = createWeather(() => state.time);
+scene.add(weather.group);
+let skyImage = null;                                 // an imported panorama used as the sky and as the light from it (not saved with the project)
 
 function applyScene() {
   const s = state.scene;
@@ -370,6 +375,10 @@ function applyScene() {
   else { sun.color.copy(SUN_LOW).lerp(SUN_HIGH, clamp(e * 1.6, 0, 1)); sun.intensity = 3.2 * Math.pow(Math.max(e, 0), 0.6) + 0.9 * twilight; }
   hemi.intensity = 0.3 + 0.6 * Math.max(0, e) + 0.35 * twilight;
   renderer.toneMappingExposure = s.exposure;
+  scene.background = skyImage || sky;
+  scene.environment = skyImage;
+  weather.set(s.weather || 'clear');
+  weather.group.visible = true;
   scene.fog = s.fog > 0 ? new THREE.FogExp2(sky.getHex(), s.fog) : null;
   grid.visible = s.grid;
 }
@@ -961,6 +970,7 @@ function syncKeyUI() {
   if (selectedKey) $('key-ease').value = selectedKey.ease;
   $('cam-autokey').checked = state.autoKey;
   $('scn-grid').checked = state.scene.grid;
+  $('scn-weather').value = state.scene.weather || 'clear';
   $('tl-duration').value = state.duration;
   $('tl-fps').value = state.fps;
   $('tl-loop').checked = state.loop;
@@ -987,6 +997,24 @@ document.querySelectorAll('[data-mount-preset]').forEach((b) => b.addEventListen
 $('btn-key').addEventListener('click', setKeyNow);
 $('btn-del-key').addEventListener('click', deleteSelectedKey);
 $('cam-autokey').addEventListener('change', (e) => { state.autoKey = e.target.checked; scheduleAutosave(); });
+$('scn-weather').replaceChildren(new Option('Clear', 'clear'), ...Object.entries(WEATHER).filter(([, w]) => w).map(([id, w]) => new Option(w.label, id)));
+$('scn-weather').addEventListener('change', (e) => { state.scene.weather = e.target.value; applyScene(); scheduleAutosave(); });
+async function importSky(file) {
+  const url = URL.createObjectURL(file);
+  try {
+    const hdr = /\.hdr$/i.test(file.name);
+    const texture = await (hdr ? new RGBELoader() : new THREE.TextureLoader()).loadAsync(url);
+    if (!hdr) texture.colorSpace = THREE.SRGBColorSpace;
+    texture.mapping = THREE.EquirectangularReflectionMapping;
+    skyImage?.dispose();
+    skyImage = texture;
+    applyScene();
+    setStatus(`Sky image ${file.name} loaded. It lights the scene too; the sun still adds its own light.`);
+  } catch (err) { setStatus(`Could not read ${file.name}: ${err.message}`); } finally { URL.revokeObjectURL(url); }
+}
+$('btn-sky').addEventListener('click', () => $('file-sky').click());
+$('file-sky').addEventListener('change', (e) => { const f = e.target.files[0]; e.target.value = ''; if (f) importSky(f); });
+$('btn-sky-clear').addEventListener('click', () => { skyImage?.dispose(); skyImage = null; applyScene(); setStatus('Sky image removed'); });
 $('scn-grid').addEventListener('change', (e) => { state.scene.grid = e.target.checked; applyScene(); scheduleAutosave(); });
 $('btn-cam-to-view').addEventListener('click', () => {
   shotCam.position.copy(freeCam.position);
@@ -1752,7 +1780,7 @@ async function runJob(job, hooks) {
     try { await sink.cancel(); } catch { /* already closed */ }
   } finally {
     setOverlays(true);
-    if (transparent) { scene.background = sky; renderer.setClearColor(0x000000, 1); ground.visible = true; applyScene(); }
+    if (transparent) { renderer.setClearColor(0x000000, 1); ground.visible = true; applyScene(); }
     scheduleAutosave();
   }
 }
@@ -1773,12 +1801,14 @@ function setDepthLook(on, range) {
     const swapped = [];
     scene.traverse((o) => { if (o.isMesh && o.material && !Array.isArray(o.material)) { swapped.push([o, o.material]); o.material = depthMaterialFor(o.material); } });
     depthSaved = { swapped, background: scene.background, fog: scene.fog };
+    weather.group.visible = false;
     scene.background = BLACK;
     scene.fog = new THREE.Fog(0x000000, 0, range);
   } else if (depthSaved) {
     for (const [o, m] of depthSaved.swapped) o.material = m;
     scene.background = depthSaved.background;
     scene.fog = depthSaved.fog;
+    weather.group.visible = true;
     depthSaved = null;
   }
 }
@@ -1939,8 +1969,9 @@ const toolHandlers = {
     if (i.sun_heading !== undefined) s.azimuth = ((numIn(i.sun_heading, 'sun_heading') % 360) + 360) % 360;
     if (i.exposure !== undefined) s.exposure = numIn(i.exposure, 'exposure', 0.2, 3);
     if (i.fog !== undefined) s.fog = numIn(i.fog, 'fog', 0, 0.15);
+    if (i.weather !== undefined) { if (!(i.weather in WEATHER)) throw new Error(`weather must be one of ${Object.keys(WEATHER).join(', ')}`); s.weather = i.weather; }
     applyScene();
-    return JSON.stringify({ time_of_day: s.tod, sun_heading: s.azimuth, exposure: s.exposure, fog: s.fog });
+    return JSON.stringify({ time_of_day: s.tod, sun_heading: s.azimuth, exposure: s.exposure, fog: s.fog, weather: s.weather || 'clear' });
   },
   set_focus: (i) => {
     const d = state.dof;
@@ -2200,6 +2231,6 @@ tick();
 // Handle for automated checks and for poking at things from the console.
 window.app = {
   state, get track() { return track; }, get bones() { return bones; }, shotCam, freeCam, actorRoot,
-  setTime, setMode, setKeyNow, setMount, applyMountPreset, selectActor, renderStill, serialise, load, importFiles, importProp, get props() { return props; }, importAnimations, setAnimation, setNext, keyPose, setPoseBone, stepHistory, flushAutosave, keyFocus, focusDistance, gizmo, get poseKeys() { return state.poseKeys; }, execTool, addJob, runQueue, get jobs() { return jobs; },
+  setTime, setMode, setKeyNow, setMount, applyMountPreset, selectActor, renderStill, serialise, load, importFiles, importProp, get props() { return props; }, importAnimations, setAnimation, setNext, keyPose, setPoseBone, importSky, stepHistory, flushAutosave, keyFocus, focusDistance, gizmo, get poseKeys() { return state.poseKeys; }, execTool, addJob, runQueue, get jobs() { return jobs; },
   assistant: { send: aiSend, messages: aiMessages, useClient(c) { aiClientOverride = c; } },
 };

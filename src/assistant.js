@@ -100,6 +100,7 @@ export const TOOLS = [
         sun_heading: { type: 'number', description: 'Compass direction the sun shines from, 0 to 360 degrees.' },
         exposure: { type: 'number', description: 'Overall brightness, 0.2 to 3. 1 is normal.' },
         fog: { type: 'number', description: 'Fog thickness, 0 (off) to 0.15.' },
+        weather: { type: 'string', enum: ['clear', 'rain', 'storm', 'snow', 'dust'], description: 'Falling rain, heavy rain, snow or drifting dust. Pair rain with fog and a darker time of day; it streaks with motion blur in renders.' },
       },
     },
   },

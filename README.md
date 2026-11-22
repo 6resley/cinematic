@@ -9,6 +9,8 @@ It keeps only what a cinematic needs: a viewport, a camera you can keyframe, a t
 
 You need [Node.js](https://nodejs.org) 20 or newer.
 
+On Windows, double-click `Cinematic.bat`: it installs what is needed the first time, starts the app and opens it in your browser. Keep its window open while you work. Or do the same by hand:
+
 ```bash
 npm install
 ```
@@ -30,7 +32,7 @@ Then open the address it prints (normally http://127.0.0.1:5173).
 - **Animations**: import `.anim.json` files exported by the ripper and play one on the character, with start time, speed and repeat. The game's 30 fps animations are blended between keys, so they stay smooth at 60, 120 or 240 fps. Poses you set are stored as offsets on top of the playing animation, so you can turn the head or lift an arm while the run carries on underneath. With **Travel** on, the animation also carries the character across the scene the way it does in the game (a sprint covers about 11 m per cycle and keeps going each repeat); with it off he stays on the spot. **Keep hands and feet above the ground** bends an arm or leg just enough when the game's animation would sink it into the flat floor (the hand at the end of a death, for example). **Then play** chains a second animation that takes over at a time you choose, with a blend between the two (a death after a sprint); it continues from wherever the first has carried him.
 - **Poses over time**: in the Scene tab pick a bone and turn it with the handle in the viewport (Free mode), then press **Key pose** (<kbd>P</kbd>). Key a different pose at another time and he eases from one to the other while the animation keeps playing underneath: a head turn mid-sprint, an arm coming up. Pose keys show as green diamonds on the timeline; click to jump there, Shift-click to delete.
 - **Camera mounts**: make the camera ride on any bone of an imported character (weapon hand, head, foot), optionally staying aimed at another bone and optionally keeping the horizon level. **Smoothing** lets the camera trail the bone a little, which takes the harsh shake out of a gun or helmet cam. Presets: **Gun cam** (fixed to the muzzle of the attached weapon, looking back down the barrel at him), **Barrel POV** (fixed on the weapon, looking where the barrel points), Helmet cam, Over shoulder and Boot cam. The two gun presets find the barrel from the weapon model, so import the weapon as a prop first. Keys set while mounted are remembered relative to the mount.
-- **Scene**: time of day, sun heading, exposure, fog.
+- **Scene**: time of day, sun heading, exposure, fog, and weather (rain, heavy rain, snow, dust) that streaks properly with motion blur. **Sky image** loads a 360° panorama (`.hdr`, `.jpg`, `.png`) as the sky and as light on the character; it is not stored in the project file, so load it again after reopening.
 - **Move things**: select an item in the Scene list, then in Free mode press <kbd>W</kbd> to move or <kbd>E</kbd> to rotate.
 - **Render queue**: add shots as jobs, each with its own time range, resolution (up to 3840 × 2160), frame rate (24 to 240), motion blur and output: an H.264 MP4, or a numbered PNG sequence written to a folder you pick. Frames are rendered one at a time at their exact moment, so the result is smooth at any frame rate regardless of how fast the computer is. Motion blur averages several sub-frames per frame.
 - **Depth of field**: in the Camera tab, raise Blur and choose what stays sharp: a bone (the focus follows it, such as the head) or a set distance. **Key focus** at two times makes a focus pull that eases from one to the other. It shows in test renders and the render queue, not the live view.
@@ -55,7 +57,7 @@ The **Assistant** tab lets you describe what you want in plain words ("slow push
 
 ## Not built yet
 
-More than two animation clips in sequence, asset library, weapons and camos, weather, look presets, motion-vector passes, and a packaged desktop build.
+More than two animation clips in sequence, asset library, look presets, motion-vector passes, and a packaged desktop build.
 
 ## Development
 

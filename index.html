@@ -123,7 +123,13 @@
         <label class="row"><span>Exposure</span><input id="scn-exposure" type="range" min="0.2" max="3" step="0.05"><output id="scn-exposure-out"></output></label>
         <h3>Atmosphere</h3>
         <label class="row"><span>Fog</span><input id="scn-fog" type="range" min="0" max="0.15" step="0.002"><output id="scn-fog-out"></output></label>
+        <label class="row"><span>Weather</span><select id="scn-weather"></select></label>
         <label class="row check"><input id="scn-grid" type="checkbox"><span>Show ground grid</span></label>
+        <div class="row buttons">
+          <button id="btn-sky" title="Use a 360° panorama (.hdr, .jpg or .png) as the sky and as light on the scene">Sky image…</button>
+          <button id="btn-sky-clear" title="Go back to the built-in sky">Remove sky image</button>
+        </div>
+        <input id="file-sky" type="file" accept=".hdr,.jpg,.jpeg,.png" hidden>
       </section>
 
       <section data-panel="render" class="panel">
