@@ -2515,7 +2515,12 @@ async function scanLibrary() {
   for (const kind of ['character', 'weapon', 'map']) {
     const sel = $(`lib-${kind}`), label = { character: 'Character', weapon: 'Weapon', map: 'Map' }[kind];
     libraryLists[kind].sort((a, b) => baseName(a).localeCompare(baseName(b)));
-    sel.replaceChildren(new Option(libraryLists[kind].length ? `${label}…` : `${label}: none in library`, ''), ...libraryLists[kind].map((p) => new Option(baseName(p), p)));
+    sel.replaceChildren(new Option(libraryLists[kind].length ? `${label}…` : `${label}: none in library`, ''), ...libraryLists[kind].map((p) => {
+      const twins = libraryLists[kind].filter((q) => baseName(q) === baseName(p)).length > 1;       // same name in two folders: say which
+      let label = twins ? `${baseName(p)} (${p.split('/').slice(0, -1).join('/') || 'library'})` : baseName(p);
+      if (kind === 'map') { const mb = (files.find((f) => f.path === p)?.size || 0) / 1e6; label += ` · ${mb.toFixed(0)} MB`; }
+      return new Option(label, p);
+    }));
     sel.disabled = !libraryLists[kind].length;
     sel.value = libraryLoaded[kind] && libraryLists[kind].includes(libraryLoaded[kind]) ? libraryLoaded[kind] : '';
   }
