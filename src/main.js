@@ -27,6 +27,7 @@ const defaults = () => ({
   props: [],                                  // settings for attached props, by name: { name, bone, hidden }
   anim: { name: null, start: 0, speed: 1, loop: true, travel: true },   // which imported animation plays on the actor
   next: { name: null, at: 2, blend: 0.25, speed: 1, loop: false },      // an animation that takes over from it part-way through
+  poseKeys: [],                               // poses keyed over time: [{ t, pose: { bone: offset } }]
   pose: {},                                   // bone name -> rotation offset layered on top of the animation (or the imported pose)
   scene: { tod: 15, azimuth: 60, exposure: 1, fog: 0, grid: true },
 });
@@ -115,7 +116,13 @@ gizmo.setSize(0.8);
 scene.add(gizmo);
 gizmo.addEventListener('dragging-changed', (e) => { orbit.enabled = !e.value && mode === 'free'; });
 gizmo.addEventListener('objectChange', () => {
-  if (gizmo.object === shotCam) cameraEdited(); else scheduleAutosave();
+  if (gizmo.object === shotCam) cameraEdited();
+  else if (gizmo.object?.isBone) {                    // posing a bone by hand: keep the turn as an offset over the animation
+    const bone = gizmo.object, base = baseQuat.get(bone.name) || lastBase.get(bone.name) || bone.quaternion.clone();
+    state.pose[bone.name] = _dq.copy(base).invert().multiply(bone.quaternion).toArray();
+    poseEdited();
+    syncPoseUI();
+  } else scheduleAutosave();
 });
 const fly = new FlyLook(canvas, () => cameraEdited());
 fly.camera = shotCam;
@@ -192,6 +199,8 @@ function applyActor() {
     origin.position.add(_ra);
     origin.quaternion.multiply(_rqa);
   }
+  if (state.poseKeys.length && !poseDirty) state.pose = poseAt(state.time);
+  if (poseBoneName && bones[poseBoneName]) lastBase.set(poseBoneName, bones[poseBoneName].quaternion.clone());
   baseQuat.clear();
   for (const [name, d] of Object.entries(state.pose)) {
     const bone = bones[name];
@@ -201,6 +210,68 @@ function applyActor() {
   }
 }
 const applyPose = applyActor;
+
+let poseDirty = false;                               // the pose was changed by hand and not keyed yet
+let poseBoneName = null;                             // bone being posed with the handle in the viewport
+const lastBase = new Map();                          // what the animation alone gives that bone, as of the last rebuild
+const IDENTITY = [0, 0, 0, 1];
+
+/** The pose at a time, blended between the keyed poses on either side (eased, so it settles into each key). */
+function poseAt(time) {
+  const keys = state.poseKeys;
+  if (time <= keys[0].t) return { ...keys[0].pose };
+  const last = keys[keys.length - 1];
+  if (time >= last.t) return { ...last.pose };
+  let i = 0;
+  while (keys[i + 1].t <= time) i++;
+  const a = keys[i], b = keys[i + 1];
+  let u = (time - a.t) / (b.t - a.t);
+  u = u * u * (3 - 2 * u);
+  const out = {};
+  for (const name of new Set([...Object.keys(a.pose), ...Object.keys(b.pose)])) {
+    out[name] = _dq.fromArray(a.pose[name] || IDENTITY).slerp(_bq.fromArray(b.pose[name] || IDENTITY), u).toArray();
+  }
+  return out;
+}
+
+function poseEdited() {
+  if (state.autoKey) keyPose();
+  else { poseDirty = state.poseKeys.length > 0; scheduleAutosave(); }
+}
+
+/** Store the current pose as a key at a time (the playhead by default). */
+function keyPose(time = state.time) {
+  const t = clamp(snap(time), 0, state.duration);
+  const pose = Object.fromEntries(Object.entries(state.pose).map(([k, v]) => [k, [...v]]));
+  const existing = state.poseKeys.find((k) => Math.abs(k.t - t) < 1e-4);
+  if (existing) existing.pose = pose; else { state.poseKeys.push({ t, pose }); state.poseKeys.sort((x, y) => x.t - y.t); }
+  poseDirty = false;
+  rebuildPoseKeys();
+  syncPoseUI();
+  scheduleAutosave();
+}
+
+function deletePoseKey(key) {
+  const i = state.poseKeys.indexOf(key);
+  if (i < 0) return;
+  state.poseKeys.splice(i, 1);
+  rebuildPoseKeys();
+  syncPoseUI();
+  scheduleAutosave();
+}
+
+function clearPose(names) {
+  if (!names) state.pose = {}; else for (const n of names) delete state.pose[n];
+  poseEdited();
+  syncPoseUI();
+}
+
+function setPoseBone(name) {
+  poseBoneName = name && bones[name] ? name : null;
+  if (poseBoneName) { selectedActor = null; rebuildActors(); applyActor(); }
+  attachGizmo();
+  syncPoseUI();
+}
 
 const _pa = new THREE.Vector3(), _pb = new THREE.Vector3();
 const _wq = new THREE.Quaternion(), _pq = new THREE.Quaternion();
@@ -241,6 +312,7 @@ function poseBone(op) {
   }
   baseQuat.set(bone.name, base);
   state.pose[bone.name] = _dq.copy(base).invert().multiply(bone.quaternion).toArray();   // store the offset, not the result
+  poseDirty = state.poseKeys.length > 0;
 }
 
 function numIn(v, name, lo = -Infinity, hi = Infinity) {
@@ -285,6 +357,7 @@ const snap = (t) => Math.round(t * state.fps) / state.fps;
 function setTime(t) {
   state.time = clamp(snap(t), 0, state.duration);
   camDirty = false;
+  poseDirty = false;
   updatePlayhead();
 }
 
@@ -417,8 +490,10 @@ function setMode(next) {
 }
 
 function attachGizmo() {
-  const target = mode === 'free' && selectedActor ? selectedActor.object : null;
+  const bone = mode === 'free' && poseBoneName ? bones[poseBoneName] : null;
+  const target = bone || (mode === 'free' && selectedActor ? selectedActor.object : null);
   if (target) gizmo.attach(target); else gizmo.detach();
+  if (bone) { gizmo.setMode('rotate'); gizmo.setSpace('local'); } else gizmo.setSpace('world');
 }
 
 const actors = [
@@ -443,6 +518,7 @@ function rebuildActors() {
 
 function selectActor(id) {
   selectedActor = actors.find((a) => a.id === id) || null;
+  if (selectedActor) poseBoneName = null;
   if (selectedActor?.kind === 'light') showTab('scene');
   if (selectedActor?.kind === 'camera') showTab('camera');
   rebuildActors();
@@ -463,6 +539,7 @@ function resize() {
   rebuildKeys();
   rebuildMarkers();
   rebuildAnimBar();
+  rebuildPoseKeys();
   updatePlayhead();
 }
 
@@ -749,6 +826,7 @@ window.addEventListener('keydown', (e) => {
     case 'Tab': e.preventDefault(); setMode(mode === 'camera' ? 'free' : 'camera'); break;
     case 'Space': e.preventDefault(); togglePlay(); break;
     case 'KeyK': setKeyNow(); break;
+    case 'KeyP': keyPose(); break;
     case 'KeyM': addMarker(); break;
     case 'Delete': case 'Backspace': deleteSelectedKey(); break;
     case 'ArrowLeft': setTime(state.time - frame * (e.shiftKey ? 10 : 1)); break;
@@ -769,7 +847,7 @@ function serialise() {
   return {
     app: 'cinematic', version: 2,
     duration: state.duration, fps: state.fps, time: state.time, loop: state.loop, autoKey: state.autoKey,
-    markers: state.markers, scene: state.scene, pose: state.pose, mount: state.mount, anim: state.anim, next: state.next, props: state.props,
+    markers: state.markers, scene: state.scene, pose: state.pose, poseKeys: state.poseKeys, mount: state.mount, anim: state.anim, next: state.next, props: state.props,
     camera: { keys: track.toJSON(), rest: { pos: camLocal.position.toArray(), quat: camLocal.quaternion.toArray(), fov: shotCam.fov } },
     actor: { name: actors[1].name, pos: actorRoot.position.toArray(), quat: actorRoot.quaternion.toArray() },
   };
@@ -780,7 +858,8 @@ function load(data) {
   const d = defaults();
   Object.assign(state, d, {
     duration: data.duration ?? d.duration, fps: data.fps ?? d.fps, time: 0, loop: !!data.loop, autoKey: !!data.autoKey,
-    markers: data.markers ?? [], scene: { ...d.scene, ...data.scene }, pose: (data.version ?? 1) >= 2 ? { ...(data.pose ?? {}) } : {}, mount: { ...d.mount, ...data.mount }, anim: { ...d.anim, ...data.anim }, next: { ...d.next, ...data.next },
+    markers: data.markers ?? [], scene: { ...d.scene, ...data.scene }, pose: (data.version ?? 1) >= 2 ? { ...(data.pose ?? {}) } : {}, poseKeys: Array.isArray(data.poseKeys) ? data.poseKeys.map((k) => ({ t: k.t, pose: { ...k.pose } })).sort((x, y) => x.t - y.t) : [],
+    mount: { ...d.mount, ...data.mount }, anim: { ...d.anim, ...data.anim }, next: { ...d.next, ...data.next },
     props: Array.isArray(data.props) ? data.props.map((p) => ({ name: p.name, bone: p.bone ?? null, hidden: [...(p.hidden ?? [])] })) : [],
   });
   legacyPose = (data.version ?? 1) < 2 && data.pose && Object.keys(data.pose).length ? data.pose : null;
@@ -797,6 +876,9 @@ function load(data) {
   syncMountUI();
   if (data.actor) { actorRoot.position.fromArray(data.actor.pos); actorRoot.quaternion.fromArray(data.actor.quat); }
   syncAnimUI();
+  poseDirty = false;
+  rebuildPoseKeys();
+  syncPoseUI();
   for (const prop of props) {                          // apply saved settings to props that are loaded in this session
     const saved = state.props.find((p) => p.name === prop.name);
     if (!saved) continue;
@@ -985,6 +1067,7 @@ async function importFiles(files, preferName) {
   collectBones();
   applyPose();
   for (const prop of props) placeProp(prop, prop.bone);
+  setPoseBone(null);
   syncMountUI();
   syncPropsUI();
   actors[1].name = loaded.name;
@@ -1184,6 +1267,27 @@ function syncAnimUI() {
   rebuildAnimBar();
 }
 
+function rebuildPoseKeys() {
+  $('tl-pose').replaceChildren(...state.poseKeys.map((k) => {
+    const d = document.createElement('div');
+    d.className = 'tl-key pose';
+    d.style.left = `${xOf(k.t)}px`;
+    d.title = `Pose key at ${k.t}s · click to go there · Shift-click to delete`;
+    d.addEventListener('pointerdown', (e) => e.stopPropagation());
+    d.addEventListener('click', (e) => { if (e.shiftKey) deletePoseKey(k); else setTime(k.t); });
+    return d;
+  }));
+}
+
+function syncPoseUI() {
+  const names = Object.keys(bones).sort(), sel = $('pose-bone');
+  if (sel.options.length !== names.length + 1) sel.replaceChildren(new Option(names.length ? 'None' : 'None (import a rigged model)', ''), ...names.map((n) => new Option(n, n)));
+  sel.value = poseBoneName || '';
+  sel.disabled = !names.length;
+  const posed = Object.keys(state.pose).length;
+  $('pose-info').textContent = `${posed} bone(s) posed · ${state.poseKeys.length} pose key(s)` + (poseDirty ? ' · changed, not keyed' : '');
+}
+
 function rebuildAnimBar() {
   const row = $('tl-anim'), clip = activeClip();
   row.replaceChildren();
@@ -1220,6 +1324,10 @@ function rebuildAnimBar() {
     }
   }
 }
+
+$('pose-bone').addEventListener('change', (e) => { if (e.target.value && mode !== 'free') setMode('free'); setPoseBone(e.target.value || null); });
+$('btn-pose-key').addEventListener('click', () => keyPose());
+$('btn-pose-clear').addEventListener('click', () => { clearPose(); applyPose(); });
 
 $('anim-clip').addEventListener('change', (e) => {
   const clip = clipLibrary.get(e.target.value);
@@ -1325,6 +1433,7 @@ async function runJob(job, hooks) {
       subframeTimes(times[i], job.fps, job.samples).forEach((t, k) => {
         state.time = t;                              // exact time, not snapped to the timeline's frame grid
         camDirty = false;
+        poseDirty = false;
         applyTrack();
         renderer.render(scene, shotCam);
         ctx.globalAlpha = 1 / (k + 1);               // running average of the sub-frames gives motion blur
@@ -1448,6 +1557,7 @@ function sceneSummary() {
       position: actorRoot.position.toArray().map(round3),
       heading_deg: round3(THREE.MathUtils.radToDeg(actorRoot.rotation.y)),
       has_skeleton: boneCount > 0, bone_count: boneCount, posed_bones: Object.keys(state.pose).length,
+      pose_key_times: state.poseKeys.map((k) => k.t), pose_changed_but_not_keyed: poseDirty,
       bounds: { min: box.min.toArray().map(round3), max: box.max.toArray().map(round3) },
     },
     animation: { ...state.anim, loaded: !!activeClip(), imported_count: clipLibrary.size, then: state.next.name, switch_at: state.next.at, blend: state.next.blend },
@@ -1584,13 +1694,24 @@ const toolHandlers = {
     if (!Array.isArray(i.operations) || !i.operations.length) throw new Error('operations must be a non-empty list');
     applyActor();
     i.operations.forEach((op, n) => { try { poseBone(op); } catch (err) { throw new Error(`Operation ${n + 1} (${op?.bone}): ${err.message}. Earlier operations were applied.`); } });
-    return `Applied ${i.operations.length} operation(s)`;
+    if (state.autoKey) keyPose();
+    syncPoseUI();
+    return `Applied ${i.operations.length} operation(s)` + (state.poseKeys.length && poseDirty ? '. This pose is not keyed yet: call key_pose to keep it at this time.' : '');
   },
   reset_pose: (i) => {
-    if (i.bones === undefined) state.pose = {};
-    else for (const n of i.bones) delete state.pose[n];
+    clearPose(i.bones);
     applyPose();
     return `${Object.keys(state.pose).length} bone(s) still posed`;
+  },
+  key_pose: (i) => {
+    keyPose(i.time !== undefined ? numIn(i.time, 'time', 0, state.duration) : state.time);
+    return `Pose keys at ${state.poseKeys.map((k) => `${k.t}s`).join(', ')}`;
+  },
+  delete_pose_keys: (i) => {
+    const before = state.poseKeys.length;
+    state.poseKeys = i.times === undefined ? [] : state.poseKeys.filter((k) => !i.times.some((t) => Math.abs(k.t - snap(t)) < 1e-4));
+    rebuildPoseKeys(); syncPoseUI(); scheduleAutosave();
+    return `Removed ${before - state.poseKeys.length} pose key(s); ${state.poseKeys.length} left`;
   },
   capture_view: (i) => {
     let cam = shotCam, label = `Shot camera at ${state.time}s`;
@@ -1623,7 +1744,7 @@ const TOOL_LABELS = {
   get_scene: 'Reading the scene', set_time: 'Moving the playhead', set_timeline: 'Changing the timeline',
   set_camera: 'Placing the camera', set_camera_keys: 'Keying the camera', delete_camera_keys: 'Deleting camera keys',
   set_scene: 'Adjusting sky and light', list_animations: 'Checking the animations', set_prop: 'Adjusting a prop', set_animation: 'Setting the animation', mount_camera: 'Mounting the camera', move_actor: 'Moving the actor', add_markers: 'Adding markers',
-  list_bones: 'Reading the skeleton', pose_bones: 'Posing bones', reset_pose: 'Resetting the pose', capture_view: 'Looking at the result',
+  list_bones: 'Reading the skeleton', pose_bones: 'Posing bones', key_pose: 'Keying the pose', delete_pose_keys: 'Deleting pose keys', reset_pose: 'Resetting the pose', capture_view: 'Looking at the result',
 };
 const aiMessages = [];
 let aiAbort = null, aiUndo = null, aiClientOverride = null;
@@ -1702,6 +1823,7 @@ function tick() {
     if (t >= state.duration) { if (state.loop) t = 0; else { t = state.duration; playing = false; syncPlayButton(); } }
     state.time = t;                       // not snapped while playing, so motion stays smooth
     camDirty = false;
+    poseDirty = false;
     updatePlayhead();
   }
   fly.update(dt, false);
@@ -1723,6 +1845,7 @@ rebuildActors();
 syncMountUI();
 syncAnimUI();
 syncPropsUI();
+syncPoseUI();
 syncQueueUI();
 $('q-to').value = state.duration;
 $('q-fps').value = state.fps;
@@ -1735,6 +1858,6 @@ tick();
 // Handle for automated checks and for poking at things from the console.
 window.app = {
   state, get track() { return track; }, get bones() { return bones; }, shotCam, freeCam, actorRoot,
-  setTime, setMode, setKeyNow, setMount, applyMountPreset, selectActor, renderStill, serialise, load, importFiles, importProp, get props() { return props; }, importAnimations, setAnimation, setNext, execTool, addJob, runQueue, get jobs() { return jobs; },
+  setTime, setMode, setKeyNow, setMount, applyMountPreset, selectActor, renderStill, serialise, load, importFiles, importProp, get props() { return props; }, importAnimations, setAnimation, setNext, keyPose, setPoseBone, gizmo, get poseKeys() { return state.poseKeys; }, execTool, addJob, runQueue, get jobs() { return jobs; },
   assistant: { send: aiSend, messages: aiMessages, useClient(c) { aiClientOverride = c; } },
 };

@@ -91,6 +91,13 @@
         <label class="row"><span>Switch at</span><input id="anim-next-at" type="number" min="0" step="0.1"><output>s</output></label>
         <label class="row"><span>Blend over</span><input id="anim-next-blend" type="number" min="0" max="2" step="0.05"><output>s</output></label>
         <p class="hint" id="anim-info"></p>
+        <h3>Pose</h3>
+        <label class="row"><span>Bone</span><select id="pose-bone" title="Pick a bone, then turn it with the handle in the viewport (Free mode)"></select></label>
+        <div class="row buttons">
+          <button id="btn-pose-key" title="Keep the current pose at the playhead (P)">Key pose</button>
+          <button id="btn-pose-clear" title="Remove every pose offset">Clear pose</button>
+        </div>
+        <p class="hint" id="pose-info"></p>
         <h3>Props</h3>
         <div id="props-list"></div>
         <p class="hint" id="props-info"></p>
@@ -188,12 +195,14 @@
           <div class="tl-name">Markers</div>
           <div class="tl-name">Camera</div>
           <div class="tl-name">Animation</div>
+          <div class="tl-name">Pose</div>
         </div>
         <div class="tl-tracks" id="tl-tracks">
           <canvas id="tl-ruler" height="22"></canvas>
           <div class="tl-row" id="tl-markers"></div>
           <div class="tl-row" id="tl-camera"></div>
           <div class="tl-row" id="tl-anim"></div>
+          <div class="tl-row" id="tl-pose"></div>
           <div id="tl-playhead"></div>
         </div>
       </div>

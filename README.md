@@ -28,6 +28,7 @@ Then open the address it prints (normally http://127.0.0.1:5173).
 - **Timeline**: scrub, play (<kbd>Space</kbd>), step frames (<kbd>←</kbd> <kbd>→</kbd>, with <kbd>Shift</kbd> for ten), markers (<kbd>M</kbd>), adjustable length and frame rate.
 - **Lens**: focal length and roll, both keyframed with the camera.
 - **Animations**: import `.anim.json` files exported by the ripper and play one on the character, with start time, speed and repeat. The game's 30 fps animations are blended between keys, so they stay smooth at 60, 120 or 240 fps. Poses you set are stored as offsets on top of the playing animation, so you can turn the head or lift an arm while the run carries on underneath. With **Travel** on, the animation also carries the character across the scene the way it does in the game (a sprint covers about 11 m per cycle and keeps going each repeat); with it off he stays on the spot. **Then play** chains a second animation that takes over at a time you choose, with a blend between the two (a death after a sprint); it continues from wherever the first has carried him.
+- **Poses over time**: in the Scene tab pick a bone and turn it with the handle in the viewport (Free mode), then press **Key pose** (<kbd>P</kbd>). Key a different pose at another time and he eases from one to the other while the animation keeps playing underneath: a head turn mid-sprint, an arm coming up. Pose keys show as green diamonds on the timeline; click to jump there, Shift-click to delete.
 - **Camera mounts**: make the camera ride on any bone of an imported character (weapon hand, head, foot), optionally staying aimed at another bone and optionally keeping the horizon level. Four presets: Gun cam, Helmet cam, Over shoulder, Boot cam. Keys set while mounted are remembered relative to the mount.
 - **Scene**: time of day, sun heading, exposure, fog.
 - **Move things**: select an item in the Scene list, then in Free mode press <kbd>W</kbd> to move or <kbd>E</kbd> to rotate.
@@ -50,7 +51,7 @@ The **Assistant** tab lets you describe what you want in plain words ("slow push
 
 ## Not built yet
 
-More than two animation clips in sequence, keyframed bone poses (pose offsets are static for now), asset library, weapons and camos, weather, look presets, depth of field and motion blur, undo/redo, and a packaged desktop build.
+More than two animation clips in sequence, asset library, weapons and camos, weather, look presets, depth of field and motion blur, undo/redo, and a packaged desktop build.
 
 ## Development
 

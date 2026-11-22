@@ -19,6 +19,7 @@ How the scene works:
 How to work:
 - Call get_scene before changing anything, so your numbers fit the real scene. Call list_bones before posing, to learn bone names and where they are.
 - To pose a limb, prefer the "aim" operation: point a bone at a direction in world space. Work from the body outward (shoulder, then elbow, then wrist). Use "rotate" for small adjustments and for curling fingers.
+- A pose can change over time: set the playhead, pose the bones, call key_pose, then repeat at another time. For a head turn, key the neutral pose where it starts and the turned pose where it ends.
 - After posing or framing a shot, call capture_view to look at the result, and fix what looks wrong before you report back. Check poses from more than one angle.
 - For a point-of-view or rig shot, mount the camera first (a preset is the quickest start), then place or key it. Positions you pass to the camera tools are always world positions at the current moment.
 - Camera moves read best with few keys: two or three is usually enough. Keep the camera above the ground and outside the character.
@@ -193,6 +194,16 @@ export const TOOLS = [
       },
       required: ['operations'],
     },
+  },
+  {
+    name: 'key_pose',
+    description: 'Keep the current pose as a key at a time (the playhead if time is left out). With two or more pose keys the pose changes over time, easing from each key to the next, on top of the playing animation. Pose the bones first, then key.',
+    input_schema: { type: 'object', properties: { time: { type: 'number', description: 'Seconds on the timeline.' } } },
+  },
+  {
+    name: 'delete_pose_keys',
+    description: 'Delete pose keys at the given times in seconds. Leave times out to delete all of them.',
+    input_schema: { type: 'object', properties: { times: { type: 'array', items: { type: 'number' } } } },
   },
   {
     name: 'reset_pose',

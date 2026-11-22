@@ -21,7 +21,7 @@ html, body { height: 100%; margin: 0; background: var(--bg); overflow: hidden; }
   display: grid;
   height: 100%;
   grid-template-columns: 200px minmax(0, 1fr) 300px;
-  grid-template-rows: 40px minmax(0, 1fr) 178px;
+  grid-template-rows: 40px minmax(0, 1fr) 206px;
   grid-template-areas: "top top top" "actors view inspector" "timeline timeline timeline";
 }
 #topbar { grid-area: top; display: flex; align-items: center; gap: 14px; padding: 0 12px; background: var(--panel); border-bottom: 1px solid var(--line); }
@@ -148,3 +148,5 @@ dialog#chooser::backdrop { background: #000a; }
 .row input[type="text"] { grid-column: 2 / 4; font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: var(--radius); padding: 4px 8px; min-width: 0; }
 
 .tl-clip.second { background: #8f4a3f; border-color: #bd6b5b; }
+
+.tl-key.pose { background: #7fd1a8; cursor: pointer; }
