@@ -1428,8 +1428,14 @@ async function loadModelFolder(files, preferName) {
       if (m.name.includes('shiny_lense')) {          // clear layer over the eyes
         Object.assign(m, { transparent: true, opacity: 0.1, roughness: 0.05, depthWrite: false, map: null });
         o.renderOrder = 2; o.castShadow = false;
-      } else if (m.alphaTest > 0) {
-        Object.assign(m, { alphaToCoverage: true, side: THREE.DoubleSide, shadowSide: THREE.DoubleSide });
+      } else {
+        if (!(m.alphaTest > 0) && /ghill/i.test(m.name) && m.map?.image?.data) {     // ghillie strips: the gaps between them are in the texture
+          const d = m.map.image.data, step = Math.max(4, Math.floor(d.length / 4 / 4000) * 4);
+          let clear = 0, n = 0;
+          for (let i = 3; i < d.length; i += step) { n++; if (d[i] < 40) clear++; }
+          if (clear / n > 0.04) m.alphaTest = 0.5;
+        }
+        if (m.alphaTest > 0) Object.assign(m, { alphaToCoverage: true, side: THREE.DoubleSide, shadowSide: THREE.DoubleSide });
       }
     });
     const note = (bound ? ` · ${bound} texture map(s) wired from the ripper's list` : '') + (missing ? ` · ${missing} texture(s) not found in the folder` : '');

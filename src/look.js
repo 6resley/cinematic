@@ -31,7 +31,7 @@ const GradeShader = {
     void main() {
       vec3 c = texture2D(tDiffuse, vUv).rgb;
       float luma = dot(c, vec3(0.2126, 0.7152, 0.0722));
-      float red = clamp((c.r - max(c.g, c.b)) * 5.0, 0.0, 1.0);                 // how clearly red this pixel is
+      float red = clamp((c.r - max(c.g * 0.82, c.b)) * 5.0, 0.0, 1.0);          // how clearly red or orange this pixel is
       c = mix(vec3(luma), c, mix(uSat, max(uSat, 1.2), red * uKeepRed));
       c *= uTint;
       c = (c - 0.5) * uContrast + 0.5;
