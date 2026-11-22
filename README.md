@@ -39,6 +39,7 @@ Then open the address it prints (normally http://127.0.0.1:5173).
 - **Test render**: renders the frame at the playhead at up to 3840 × 2160 into a viewer, with Save PNG (<kbd>Shift</kbd>+<kbd>R</kbd>).
 - **Import model**: pick the folder holding a `.glb` and its textures. Files are read locally and never uploaded. A folder straight from the ripper works as it is: the app reads `<model>_textures.txt` and the `.dds` files itself, including the game's normal and specular maps. If the folder holds several models you are asked which one.
 - **Props**: Import prop adds a second model, such as a weapon, attached to a bone of the character (the weapon hand by default) so it moves with the animation. A weapon model contains every attachment at once, so each part has a checkbox; scopes, suppressors and similar extras start hidden. Camo variants of a weapon load with their camo painted on.
+- **Undo and redo**: <kbd>Ctrl</kbd>+<kbd>Z</kbd> and <kbd>Ctrl</kbd>+<kbd>Y</kbd> (or the arrows in the top bar) step back and forward through your changes: camera keys, poses, mounts, lighting, animation settings.
 - **Projects**: Save and Open as a `.json` file, plus an automatic restore of your last session.
 
 Until you import a model, a plain stand-in figure marks where the character goes.
@@ -54,7 +55,7 @@ The **Assistant** tab lets you describe what you want in plain words ("slow push
 
 ## Not built yet
 
-More than two animation clips in sequence, asset library, weapons and camos, weather, look presets, motion-vector passes, undo/redo, and a packaged desktop build.
+More than two animation clips in sequence, asset library, weapons and camos, weather, look presets, motion-vector passes, and a packaged desktop build.
 
 ## Development
 

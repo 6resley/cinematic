@@ -1023,7 +1023,12 @@ $('tl-duration').addEventListener('change', (e) => {
 });
 
 window.addEventListener('keydown', (e) => {
-  if (typing(e) || e.ctrlKey || e.metaKey) return;
+  if (typing(e)) return;
+  if (e.ctrlKey || e.metaKey) {
+    if (e.code === 'KeyZ') { e.preventDefault(); stepHistory(e.shiftKey ? 1 : -1); }
+    else if (e.code === 'KeyY') { e.preventDefault(); stepHistory(1); }
+    return;
+  }
   if (!$('viewer').hidden) { if (e.code === 'Escape') $('viewer').hidden = true; return; }
   const frame = 1 / state.fps;
   switch (e.code) {
@@ -1106,10 +1111,47 @@ function load(data) {
 let autosaveTimer = null;
 function scheduleAutosave() {
   clearTimeout(autosaveTimer);
-  autosaveTimer = setTimeout(() => {
-    try { localStorage.setItem(AUTOSAVE_KEY, JSON.stringify(serialise())); } catch { /* storage unavailable: nothing to do */ }
-  }, 600);
+  autosaveTimer = setTimeout(flushAutosave, 600);
 }
+function flushAutosave() {
+  clearTimeout(autosaveTimer);
+  autosaveTimer = null;
+  const data = serialise(), json = JSON.stringify(data);
+  recordHistory(data, json);
+  try { localStorage.setItem(AUTOSAVE_KEY, json); } catch { /* storage unavailable: nothing to do */ }
+}
+
+// ---- undo and redo: every settled change is a step; the playhead and the render queue are not part of a step
+const history = [];
+let historyAt = -1;
+function recordHistory(data, json) {
+  const key = JSON.stringify({ ...data, time: 0, queue: null });
+  if (historyAt >= 0 && history[historyAt].key === key) return;
+  history.splice(historyAt + 1);
+  history.push({ key, json });
+  if (history.length > 200) history.shift();
+  historyAt = history.length - 1;
+  syncUndoUI();
+}
+function stepHistory(by) {
+  if (rendering) return;
+  if (autosaveTimer) flushAutosave();                  // a change still settling becomes its own step first
+  const to = historyAt + by;
+  if (to < 0 || to >= history.length) return;
+  historyAt = to;
+  const data = JSON.parse(history[to].json), time = state.time;
+  data.queue = serialise().queue;
+  load(data);
+  setTime(Math.min(time, state.duration));
+  syncUndoUI();
+  setStatus(by < 0 ? 'Undone' : 'Redone');
+}
+function syncUndoUI() {
+  $('btn-undo').disabled = historyAt <= 0;
+  $('btn-redo').disabled = historyAt >= history.length - 1;
+}
+$('btn-undo').addEventListener('click', () => stepHistory(-1));
+$('btn-redo').addEventListener('click', () => stepHistory(1));
 
 $('btn-save').addEventListener('click', () => {
   const a = document.createElement('a');
@@ -2146,6 +2188,7 @@ syncAnimUI();
 syncPropsUI();
 syncPoseUI();
 syncQueueUI();
+flushAutosave();                                      // the starting point for undo
 $('q-to').value = state.duration;
 $('q-fps').value = state.fps;
 setMode('free');
@@ -2157,6 +2200,6 @@ tick();
 // Handle for automated checks and for poking at things from the console.
 window.app = {
   state, get track() { return track; }, get bones() { return bones; }, shotCam, freeCam, actorRoot,
-  setTime, setMode, setKeyNow, setMount, applyMountPreset, selectActor, renderStill, serialise, load, importFiles, importProp, get props() { return props; }, importAnimations, setAnimation, setNext, keyPose, setPoseBone, keyFocus, focusDistance, gizmo, get poseKeys() { return state.poseKeys; }, execTool, addJob, runQueue, get jobs() { return jobs; },
+  setTime, setMode, setKeyNow, setMount, applyMountPreset, selectActor, renderStill, serialise, load, importFiles, importProp, get props() { return props; }, importAnimations, setAnimation, setNext, keyPose, setPoseBone, stepHistory, flushAutosave, keyFocus, focusDistance, gizmo, get poseKeys() { return state.poseKeys; }, execTool, addJob, runQueue, get jobs() { return jobs; },
   assistant: { send: aiSend, messages: aiMessages, useClient(c) { aiClientOverride = c; } },
 };
