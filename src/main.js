@@ -22,7 +22,7 @@ const SENSOR_HALF = 12;                       // half of a 24 mm sensor height
 const fovFromFocal = (mm) => THREE.MathUtils.radToDeg(2 * Math.atan(SENSOR_HALF / mm));
 const focalFromFov = (fov) => SENSOR_HALF / Math.tan(THREE.MathUtils.degToRad(fov) / 2);
 const AUTOSAVE_KEY = 'cinematic.autosave.v1';
-const APP_BUILD = 'build 28 · camera cuts';        // shown in the top bar, so it is easy to tell which copy is running
+const APP_BUILD = 'build 29 · textured merged models';        // shown in the top bar, so it is easy to tell which copy is running
 
 // ------------------------------------------------------------------ state
 const defaults = () => ({
@@ -1503,11 +1503,13 @@ function dataTexture(image, srgb) {
  * material uses, and the images are .dds files anywhere in the picked folder. Returns how many maps were set.
  */
 async function bindRippedTextures(root, modelName, files) {
-  const listFile = files.find((f) => f.name.toLowerCase() === `${modelName.toLowerCase()}_textures.txt`);
-  if (!listFile) return 0;
+  const own = files.find((f) => f.name.toLowerCase() === `${modelName.toLowerCase()}_textures.txt`);
+  // A merged model (body with head) has no list of its own: its materials are in the lists of the parts beside it.
+  const lists = own ? [own] : files.filter((f) => /_textures\.txt$/i.test(f.name));
+  if (!lists.length) return 0;
   const byName = new Map(files.map((f) => [f.name.toLowerCase(), f]));
   const wanted = {};                                    // material name -> { 2: colour, 5: normal, 8: specular }
-  for (const line of (await listFile.text()).split(/\r?\n/)) {
+  for (const listFile of lists) for (const line of (await listFile.text()).split(/\r?\n/)) {
     const part = line.split('\t');
     if (part.length !== 3) continue;
     (wanted[part[0]] ||= {})[Number(part[1].split('=')[1])] = part[2].replace(/^images\//, '').replace(/\.iwi$/i, '');
@@ -2674,10 +2676,12 @@ async function libraryFiles(modelPath) {
   const wanted = [modelPath];
   const drawList = libraryIndex.get(`${dir}${baseName(modelPath)}_materials.txt`.toLowerCase());
   if (drawList) wanted.push(drawList);
-  const list = libraryIndex.get(`${dir}${baseName(modelPath)}_textures.txt`.toLowerCase());
-  if (list) {
+  const own = libraryIndex.get(`${dir}${baseName(modelPath)}_textures.txt`.toLowerCase());
+  // a merged model (body with head) has no list of its own: use the lists of the parts in the same folder
+  const lists = own ? [own] : [...libraryIndex.values()].filter((p) => p.startsWith(dir) && !p.slice(dir.length).includes('/') && /_textures\.txt$/i.test(p));
+  for (const list of lists) {
     wanted.push(list);
-    const text = await (await fetch(`/library/${encodeURI(list)}`)).text();
+    const text = await (await fetch(`/library/${list.split('/').map(encodeURIComponent).join('/')}`)).text();
     for (const line of text.split(/\r?\n/)) {
       const image = line.split('\t')[2];
       if (!image) continue;
