@@ -17,6 +17,7 @@
         <button id="btn-undo" title="Undo (Ctrl+Z)" disabled>↶</button>
         <button id="btn-redo" title="Redo (Ctrl+Y)" disabled>↷</button>
         <button id="btn-import" title="Pick the folder that holds a .glb model and its textures">Import model</button>
+        <button id="btn-import-map" title="Pick the folder holding a map exported with iw4x_rip.py --map">Import map</button>
         <button id="btn-import-prop" title="Pick the folder that holds a weapon or other model to attach to the character">Import prop</button>
         <button id="btn-import-anim" title="Pick one or more .anim.json files exported by the ripper">Import animations</button>
       </div>
@@ -29,11 +30,13 @@
       <input id="file-import" type="file" webkitdirectory multiple hidden>
       <input id="file-anim" type="file" accept=".json" multiple hidden>
       <input id="file-prop" type="file" webkitdirectory multiple hidden>
+      <input id="file-map" type="file" webkitdirectory multiple hidden>
     </header>
 
     <aside id="actors">
       <h2>Scene</h2>
       <ul id="actor-list"></ul>
+      <button id="btn-place-actor" title="Stand the character on whatever the middle of the view is pointing at">Place actor here</button>
       <p class="hint">Select an item, then in Free mode press <kbd>W</kbd> to move or <kbd>E</kbd> to rotate it.</p>
     </aside>
 

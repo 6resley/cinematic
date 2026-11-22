@@ -277,7 +277,7 @@ function keepAboveGround() {
     if (!upper || !mid || !end) continue;
     let low = Infinity;                              // lowest joint of the hand or foot, fingers and toes included
     end.traverse((o) => { if (bones[o.name] === o && !o.name.startsWith('tag_')) low = Math.min(low, o.matrixWorld.elements[13]); });
-    const lift = GROUND_CLEAR - low;
+    const lift = actorRoot.position.y + GROUND_CLEAR - low;      // the ground is wherever he has been stood
     if (!(lift > 0)) continue;
     const a = upper.getWorldPosition(_ia).toArray(), b = mid.getWorldPosition(_ib).toArray(), c = end.getWorldPosition(_ic).toArray();
     const r = twoBoneReach(a, b, c, [c[0], c[1] + lift, c[2]]);
@@ -437,6 +437,7 @@ function applyScene() {
   skyDome.visible = !skyImage;
   ground.material.color.set(state.look.wet ? 0x1b1d21 : 0x8d9094);           // wet ground is dark and catches the light
   ground.material.roughness = state.look.wet ? 0.28 : 1;
+  ground.visible = !mapName;                           // a loaded map brings its own ground
   followLights();
   if (night) { sun.color.copy(MOON); sun.intensity = 1.1; }
   else { sun.color.copy(SUN_LOW).lerp(SUN_HIGH, clamp(e * 1.6, 0, 1)); sun.intensity = 3.2 * Math.pow(Math.max(e, 0), 0.6) + 0.9 * twilight; }
@@ -1458,6 +1459,52 @@ async function importFiles(files, preferName) {
 
 // ------------------------------------------------------------------ props (a weapon in the hand, anything attached to a bone)
 const props = [];
+// ---- maps: the environment ripped from the game, loaded as scenery
+const mapRoot = new THREE.Group();
+scene.add(mapRoot);
+let mapName = null;
+async function importMap(files, preferName) {
+  const loaded = await loadModelFolder(files, preferName);
+  if (!loaded) return null;
+  mapRoot.clear();
+  mapRoot.add(loaded.scene);
+  let meshes = 0;
+  loaded.scene.traverse((o) => {
+    if (!o.isMesh) return;
+    meshes++;
+    o.castShadow = true; o.receiveShadow = true;
+    for (const m of Array.isArray(o.material) ? o.material : [o.material]) {
+      for (const key of ['map', 'normalMap', 'roughnessMap']) if (m[key]) { m[key].wrapS = m[key].wrapT = THREE.RepeatWrapping; m[key].needsUpdate = true; }   // world textures tile
+    }
+  });
+  mapName = loaded.name;
+  applyScene();
+  const box = new THREE.Box3().setFromObject(mapRoot), centre = box.getCenter(new THREE.Vector3()), size = box.getSize(new THREE.Vector3());
+  orbit.target.copy(centre);
+  freeCam.position.copy(centre).add(new THREE.Vector3(0.25, 0.35, 0.25).multiplyScalar(Math.max(size.x, size.z)));
+  freeCam.far = Math.max(freeCam.far, size.length() * 3); freeCam.updateProjectionMatrix();
+  shotCam.far = Math.max(shotCam.far, size.length() * 3); shotCam.updateProjectionMatrix();
+  setMode('free');
+  setStatus(`Added map ${loaded.name} (${meshes} parts, ${Math.round(size.x)} × ${Math.round(size.z)} m). Aim the view at a spot and press Place actor here.`);
+  return loaded.name;
+}
+const _ray = new THREE.Raycaster();
+/** Stand the character on whatever the middle of the current view is looking at (map or ground). */
+function placeActorAtView() {
+  const cam = mode === 'camera' ? shotCam : freeCam;
+  _ray.setFromCamera(new THREE.Vector2(0, 0), cam);
+  const hit = _ray.intersectObjects(mapName ? [mapRoot] : [ground], true)[0];
+  if (!hit) { setStatus('Nothing under the middle of the view to stand him on'); return false; }
+  actorRoot.position.copy(hit.point);
+  applyTrack();
+  scheduleAutosave();
+  setStatus(`Actor placed at ${hit.point.toArray().map((v) => v.toFixed(1)).join(', ')}`);
+  return true;
+}
+$('btn-import-map').addEventListener('click', () => $('file-map').click());
+$('file-map').addEventListener('change', (e) => { const files = [...e.target.files]; e.target.value = ''; importMap(files); });
+$('btn-place-actor').addEventListener('click', placeActorAtView);
+
 const propWorld = new THREE.Group();                     // where unattached props and all prop meshes live
 scene.add(propWorld);
 const HIDDEN_BY_DEFAULT = /acog|thermal|suppress|silenc|motion_tracker|heartbeat|laser|reflex|eotech|holo|grenad|shotgun|foregrip|_grip|tactical|akimbo|fmj|xmag/i;
@@ -1920,7 +1967,7 @@ async function runJob(job, hooks) {
     try { await sink.cancel(); } catch { /* already closed */ }
   } finally {
     setOverlays(true);
-    if (transparent) { renderer.setClearColor(0x000000, 1); ground.visible = true; applyScene(); }
+    if (transparent) { renderer.setClearColor(0x000000, 1); applyScene(); }
     scheduleAutosave();
   }
 }
@@ -2389,6 +2436,6 @@ tick();
 // Handle for automated checks and for poking at things from the console.
 window.app = {
   state, get track() { return track; }, get bones() { return bones; }, shotCam, freeCam, actorRoot,
-  setTime, setMode, setKeyNow, setMount, applyMountPreset, selectActor, renderStill, serialise, load, importFiles, importProp, get props() { return props; }, importAnimations, setAnimation, setNext, setChain, keyPose, setPoseBone, importSky, stepHistory, flushAutosave, keyFocus, focusDistance, gizmo, get poseKeys() { return state.poseKeys; }, execTool, addJob, runQueue, get jobs() { return jobs; },
+  setTime, setMode, setKeyNow, setMount, applyMountPreset, selectActor, renderStill, serialise, load, importFiles, importProp, get props() { return props; }, importAnimations, setAnimation, setNext, setChain, keyPose, setPoseBone, importSky, importMap, placeActorAtView, mapRoot, stepHistory, flushAutosave, keyFocus, focusDistance, gizmo, get poseKeys() { return state.poseKeys; }, execTool, addJob, runQueue, get jobs() { return jobs; },
   assistant: { send: aiSend, messages: aiMessages, useClient(c) { aiClientOverride = c; } },
 };
