@@ -165,6 +165,15 @@ gizmo.addEventListener('objectChange', () => {
     syncPoseUI();
   } else scheduleAutosave();
 });
+const FREE_KEYS = { KeyW: [0, 0, -1], KeyS: [0, 0, 1], KeyA: [-1, 0, 0], KeyD: [1, 0, 0], KeyQ: [0, -1, 0], KeyE: [0, 1, 0] };
+const freeHeld = new Set(), _flyStep = new THREE.Vector3(), _flyDir = new THREE.Vector3();
+let shiftHeld = false;
+window.addEventListener('keydown', (e) => {
+  shiftHeld = e.shiftKey;
+  if (mode === 'free' && FREE_KEYS[e.code] && !e.ctrlKey && !e.metaKey && !/^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName)) freeHeld.add(e.code);
+});
+window.addEventListener('keyup', (e) => { shiftHeld = e.shiftKey; freeHeld.delete(e.code); });
+window.addEventListener('blur', () => { freeHeld.clear(); shiftHeld = false; });
 const fly = new FlyLook(canvas, () => cameraEdited());
 fly.camera = shotCam;
 resetCameras();
@@ -687,7 +696,7 @@ function setMode(next) {
   $('view-label').classList.toggle('camera', mode === 'camera');
   $('view-hint').textContent = mode === 'camera'
     ? 'Drag to look · W A S D Q E to fly · wheel to dolly · K sets a key · Tab for free view'
-    : 'Drag to orbit · right-drag to pan · wheel to zoom · Tab to look through the camera';
+    : 'Drag to orbit · W A S D Q E to fly (Shift = faster) · wheel to zoom · G move · R rotate · Tab for the camera';
   attachGizmo();
 }
 
@@ -1171,8 +1180,8 @@ window.addEventListener('keydown', (e) => {
     case 'Home': setTime(0); break;
     case 'End': setTime(state.duration); break;
     case 'KeyR': if (e.shiftKey) renderCurrentFrame(); break;
-    case 'KeyW': if (mode === 'free') gizmo.setMode('translate'); break;
-    case 'KeyE': if (mode === 'free') gizmo.setMode('rotate'); break;
+    case 'KeyG': if (mode === 'free') gizmo.setMode('translate'); break;
+    case 'KeyR': if (mode === 'free' && !e.shiftKey) gizmo.setMode('rotate'); break;
     default: return;
   }
 });
@@ -2441,7 +2450,19 @@ function tick() {
     poseDirty = false;
     updatePlayhead();
   }
-  fly.update(dt, false);
+  fly.update(dt, shiftHeld);
+  if (mode === 'free' && freeHeld.size) {              // fly the free view with W A S D Q E; Shift goes faster
+    const speed = Math.max(3, freeCam.position.distanceTo(orbit.target) * 0.6) * (shiftHeld ? 4 : 1) * dt;
+    _flyStep.set(0, 0, 0);
+    for (const code of freeHeld) _flyStep.add(_flyDir.fromArray(FREE_KEYS[code]));
+    _flyStep.normalize().multiplyScalar(speed);
+    const up = _flyStep.y;
+    _flyStep.y = 0;
+    _flyStep.applyQuaternion(freeCam.quaternion);
+    _flyStep.y += up;                                  // Q and E are straight down and up
+    freeCam.position.add(_flyStep);
+    orbit.target.add(_flyStep);
+  }
   applyTrack();
   if (mode === 'free') orbit.update();
   syncInspector();
