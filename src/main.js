@@ -730,11 +730,31 @@ function rebuildActors() {
 function selectActor(id) {
   selectedActor = actors.find((a) => a.id === id) || null;
   if (selectedActor) poseBoneName = null;
-  if (selectedActor?.kind === 'light') showTab('scene');
+  if (selectedActor?.kind === 'light' || selectedActor?.kind === 'model') showTab('scene');   // his animation, pose and props live there
   if (selectedActor?.kind === 'camera') showTab('camera');
+  setStatus(selectedActor ? `Selected ${selectedActor.name}${selectedActor.kind === 'model' ? ': animation, pose and props are in the Scene tab · G to move, R to rotate' : ''}` : 'Nothing selected');
   rebuildActors();
   attachGizmo();
 }
+
+// ---- click to select, like Blender: click the character (or his weapon) in Free mode; click empty space to deselect
+const selectBox = new THREE.BoxHelper(actorRoot, 0xe8a13a);
+selectBox.visible = false;
+scene.add(selectBox);
+const _pick = new THREE.Raycaster(), _pickAt = new THREE.Vector2();
+let pressAt = null;
+canvas.addEventListener('pointerdown', (e) => { pressAt = e.button === 0 ? [e.clientX, e.clientY] : null; });
+canvas.addEventListener('pointerup', (e) => {
+  if (!pressAt || mode !== 'free' || gizmo.dragging || Math.hypot(e.clientX - pressAt[0], e.clientY - pressAt[1]) > 4) { pressAt = null; return; }
+  pressAt = null;
+  const r = canvas.getBoundingClientRect();
+  _pickAt.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
+  actorRoot.updateMatrixWorld(true);
+  _pick.setFromCamera(_pickAt, freeCam);
+  const hit = _pick.intersectObjects([actorRoot, propWorld], true).find((h) => h.object.visible);
+  if (hit) { if (selectedActor?.id !== 'actor') selectActor('actor'); }
+  else if (selectedActor && !poseBoneName) selectActor(null);
+});
 
 // ------------------------------------------------------------------ rendering
 function viewSize() { return { w: Math.max(1, viewEl.clientWidth), h: Math.max(1, viewEl.clientHeight) }; }
@@ -754,7 +774,7 @@ function resize() {
   updatePlayhead();
 }
 
-const overlays = [camHelper, pathLine, keyDots];
+const overlays = [camHelper, pathLine, keyDots, selectBox];
 function setOverlays(on) {
   for (const o of overlays) o.visible = on;
   gizmo.visible = on && !!gizmo.object;
@@ -2465,6 +2485,8 @@ function tick() {
   }
   applyTrack();
   if (mode === 'free') orbit.update();
+  selectBox.visible = mode === 'free' && selectedActor?.id === 'actor';
+  if (selectBox.visible) selectBox.update();
   syncInspector();
   draw();
   requestAnimationFrame(tick);
