@@ -150,3 +150,5 @@ dialog#chooser::backdrop { background: #000a; }
 .tl-clip.second { background: #8f4a3f; border-color: #bd6b5b; }
 
 .tl-key.pose { background: #7fd1a8; cursor: pointer; }
+
+.q-side { display: flex; gap: 4px; }

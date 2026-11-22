@@ -196,6 +196,20 @@ export const TOOLS = [
     },
   },
   {
+    name: 'set_focus',
+    description: 'Depth of field for the shot camera: how blurred things in front of and behind the focus are, and what stays sharp. Only the fields you pass change. Focus either follows a bone (stays sharp on it as it moves) or sits at a distance in metres. For a focus pull, go to the first time and call with a bone or distance and key: true, then go to the second time and do the same: the focus eases between the keys. It shows in test renders and the render queue, not the live view; capture_view does not show it.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        blur: { type: 'number', description: '0 (off, everything sharp) to 10. Around 3 is a gentle film look at a few metres; close-up camera mounts need 1 or less.' },
+        bone: { type: 'string', description: 'Bone to keep sharp, e.g. j_head. Empty string to stop following a bone.' },
+        distance: { type: 'number', description: 'Metres in front of the camera that are sharp.' },
+        key: { type: 'boolean', description: 'Store the current focus distance (or the bone\'s current distance) as a key at the playhead.' },
+        clear_keys: { type: 'boolean', description: 'Remove all focus keys.' },
+      },
+    },
+  },
+  {
     name: 'key_pose',
     description: 'Keep the current pose as a key at a time (the playhead if time is left out). With two or more pose keys the pose changes over time, easing from each key to the next, on top of the playing animation. Pose the bones first, then key.',
     input_schema: { type: 'object', properties: { time: { type: 'number', description: 'Seconds on the timeline.' } } },

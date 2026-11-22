@@ -59,3 +59,51 @@ export function createPngSink(canvas, base, write) {
     finish: async () => null,
   };
 }
+
+/** Points spread evenly over a unit disk (a sunflower pattern): where on the lens each depth-of-field sample looks from. */
+export function lensOffsets(n) {
+  if (n < 2) return [[0, 0]];
+  return Array.from({ length: n }, (_, k) => {
+    const r = Math.sqrt((k + 0.5) / n), a = k * 2.399963229728653;
+    return [r * Math.cos(a), r * Math.sin(a)];
+  });
+}
+
+/** Add one rendered sample (bytes) into a running total. */
+export function addSample(sum, px) {
+  for (let i = 0; i < px.length; i++) sum[i] += px[i];
+}
+
+/**
+ * Average `n` summed samples into RGBA bytes. The samples come from WebGL, bottom row first, so rows are flipped.
+ * With `keepAlpha` the samples are colour already multiplied by coverage; the result is plain colour plus alpha,
+ * which is what a PNG stores. Without it the result is opaque.
+ */
+export function resolveSamples(sum, n, width, height, out, keepAlpha = false) {
+  for (let y = 0; y < height; y++) {
+    let s = (height - 1 - y) * width * 4, o = y * width * 4;
+    for (let x = 0; x < width; x++, s += 4, o += 4) {
+      if (keepAlpha) {
+        const a = sum[s + 3] / n, k = a > 0 ? 255 / (a * n) : 0;
+        out[o] = Math.min(255, sum[s] * k + 0.5); out[o + 1] = Math.min(255, sum[s + 1] * k + 0.5); out[o + 2] = Math.min(255, sum[s + 2] * k + 0.5);
+        out[o + 3] = a + 0.5;
+      } else {
+        out[o] = sum[s] / n + 0.5; out[o + 1] = sum[s + 1] / n + 0.5; out[o + 2] = sum[s + 2] / n + 0.5; out[o + 3] = 255;
+      }
+    }
+  }
+  return out;
+}
+
+/** Focus distance at a time from keys [{ t, distance }] sorted by time, easing between them (a focus pull). */
+export function focusAt(keys, time) {
+  if (time <= keys[0].t) return keys[0].distance;
+  const last = keys[keys.length - 1];
+  if (time >= last.t) return last.distance;
+  let i = 0;
+  while (keys[i + 1].t <= time) i++;
+  const a = keys[i], b = keys[i + 1];
+  let u = (time - a.t) / (b.t - a.t);
+  u = u * u * (3 - 2 * u);
+  return a.distance + (b.distance - a.distance) * u;
+}

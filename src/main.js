@@ -7,7 +7,7 @@ import { FlyLook } from './flylook.js';
 import { toLocal, toWorld, reframeKeys, bodyAxes } from './mount.js';
 import { Clip } from './anim.js';
 import { decodeDDS, gameNormalToStandard, gameSpecToRoughness, applyCamo } from './dds.js';
-import { frameTimes, subframeTimes, safeName, canMakeMp4, createMp4Sink, createPngSink } from './renderqueue.js';
+import { frameTimes, subframeTimes, safeName, canMakeMp4, createMp4Sink, createPngSink, lensOffsets, addSample, resolveSamples, focusAt } from './renderqueue.js';
 import { createClient, runTurn, describeError, MODEL } from './assistant.js';
 
 const $ = (id) => document.getElementById(id);
@@ -27,6 +27,7 @@ const defaults = () => ({
   props: [],                                  // settings for attached props, by name: { name, bone, hidden }
   anim: { name: null, start: 0, speed: 1, loop: true, travel: true },   // which imported animation plays on the actor
   next: { name: null, at: 2, blend: 0.25, speed: 1, loop: false },      // an animation that takes over from it part-way through
+  dof: { blur: 0, bone: '', distance: 3, keys: [] },   // depth of field: how much blur, and what stays sharp (a bone, or a keyed distance)
   poseKeys: [],                               // poses keyed over time: [{ t, pose: { bone: offset } }]
   pose: {},                                   // bone name -> rotation offset layered on top of the animation (or the imported pose)
   scene: { tod: 15, azimuth: 60, exposure: 1, fog: 0, grid: true },
@@ -42,7 +43,7 @@ let selectedActor = null;
 // ------------------------------------------------------------------ three
 const canvas = $('canvas');
 const viewEl = $('viewport');
-const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: true });
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true, preserveDrawingBuffer: true });
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
@@ -588,6 +589,80 @@ function draw() {
 }
 
 /** Render the current frame through the shot camera at full size. Returns a PNG blob. */
+// ---- depth of field: each sample looks from a different point on the lens, all agreeing on the focus distance
+const LENS_UNIT = 0.002;                             // metres of lens radius per step of the blur slider
+const DOF_SAMPLES = 24;
+const _fa = new THREE.Vector3(), _fb = new THREE.Vector3();
+const lensCache = new Map();
+
+/** How far in front of the camera things are sharp right now. */
+function focusDistance() {
+  const d = state.dof, bone = d.bone && bones[d.bone];
+  if (bone) {
+    actorRoot.updateMatrixWorld(true);
+    return Math.max(0.05, bone.getWorldPosition(_fa).sub(shotCam.position).dot(_fb.set(0, 0, -1).applyQuaternion(shotCam.quaternion)));
+  }
+  return d.keys.length ? focusAt(d.keys, state.time) : d.distance;
+}
+
+/** Shift the shot camera to lens point `k` of `n` and skew its view so the focus distance stays put. */
+function applyLens(k, n) {
+  shotCam.updateProjectionMatrix();
+  if (!(state.dof.blur > 0) || n < 2) return;
+  if (!lensCache.has(n)) lensCache.set(n, lensOffsets(n));
+  const F = focusDistance(), r = state.dof.blur * LENS_UNIT, [u, v] = lensCache.get(n)[k];
+  shotCam.position.add(_fa.set(u * r, v * r, 0).applyQuaternion(shotCam.quaternion));
+  const P = shotCam.projectionMatrix.elements;
+  P[8] = (-P[0] * u * r) / F;
+  P[9] = (-P[5] * v * r) / F;
+  shotCam.projectionMatrixInverse.copy(shotCam.projectionMatrix).invert();
+}
+
+const makeAccumulator = (width, height) => ({ width, height, sum: new Uint16Array(width * height * 4), px: new Uint8Array(width * height * 4) });
+
+/** Render `total` samples and add them up. `times` gives each sample its own moment (motion blur); without it the scene is left as it is. */
+function renderSamples(acc, total, times) {
+  const gl = renderer.getContext();
+  acc.sum.fill(0);
+  for (let k = 0; k < total; k++) {
+    if (times) { state.time = times[k]; camDirty = false; poseDirty = false; }
+    applyTrack();
+    applyLens(k, total);
+    renderer.render(scene, shotCam);
+    gl.readPixels(0, 0, acc.width, acc.height, gl.RGBA, gl.UNSIGNED_BYTE, acc.px);
+    addSample(acc.sum, acc.px);
+  }
+  shotCam.updateProjectionMatrix();
+}
+
+/** Put the average of an accumulator's samples on a 2D canvas. */
+function resolveTo(ctx, acc, total, keepAlpha) {
+  const image = ctx.createImageData(acc.width, acc.height);
+  resolveSamples(acc.sum, total, acc.width, acc.height, image.data, keepAlpha);
+  ctx.putImageData(image, 0, 0);
+}
+
+function keyFocus(distance = focusDistance()) {
+  const d = state.dof, t = clamp(snap(state.time), 0, state.duration);
+  const existing = d.keys.find((k) => Math.abs(k.t - t) < 1e-4);
+  if (existing) existing.distance = distance; else { d.keys.push({ t, distance }); d.keys.sort((x, y) => x.t - y.t); }
+  d.distance = distance;
+  d.bone = '';                                       // keyed distances drive the focus from here on
+  syncFocusUI();
+  scheduleAutosave();
+}
+
+function syncFocusUI() {
+  const names = Object.keys(bones).sort(), sel = $('dof-bone');
+  if (sel.options.length !== names.length + 1) sel.replaceChildren(new Option('A set distance', ''), ...names.map((n) => new Option(n, n)));
+  if (state.dof.bone && !bones[state.dof.bone]) state.dof.bone = '';
+  sel.value = state.dof.bone;
+  const d = state.dof;
+  $('dof-info').textContent = (d.blur > 0 ? `Sharp at ${focusDistance().toFixed(2)} m` : 'Off: everything is sharp')
+    + (d.keys.length ? ` · ${d.keys.length} focus key(s) at ${d.keys.map((k) => `${k.t}s`).join(', ')}` : '')
+    + '. Shows in test renders and the render queue, not in the live view.';
+}
+
 async function renderStill(width, height) {
   const started = performance.now();
   applyTrack();
@@ -598,8 +673,16 @@ async function renderStill(width, height) {
   shotCam.updateProjectionMatrix();
   setOverlays(false);
   renderer.setViewport(0, 0, width, height);
-  renderer.render(scene, shotCam);
-  const blob = await new Promise((res) => canvas.toBlob(res, 'image/png'));
+  let source = canvas;
+  if (state.dof.blur > 0) {                            // depth of field: average many views through the lens
+    const acc = makeAccumulator(width, height);
+    renderSamples(acc, DOF_SAMPLES * 2, null);
+    source = document.createElement('canvas');
+    source.width = width; source.height = height;
+    resolveTo(source.getContext('2d'), acc, DOF_SAMPLES * 2, false);
+    applyTrack();
+  } else renderer.render(scene, shotCam);
+  const blob = await new Promise((res) => source.toBlob(res, 'image/png'));
   setOverlays(true);
   resize();
   draw();
@@ -743,6 +826,13 @@ const syncers = [
   bindRange('scn-azimuth', () => state.scene.azimuth, (v) => { state.scene.azimuth = v; applyScene(); scheduleAutosave(); }, (v) => `${Math.round(v)}°`),
   bindRange('scn-exposure', () => state.scene.exposure, (v) => { state.scene.exposure = v; applyScene(); scheduleAutosave(); }, (v) => v.toFixed(2)),
   bindRange('scn-fog', () => state.scene.fog, (v) => { state.scene.fog = v; applyScene(); scheduleAutosave(); }, (v) => (v === 0 ? 'off' : v.toFixed(3))),
+  () => { if (state.dof.blur > 0 && (state.dof.keys.length || state.dof.bone)) syncFocusUI(); },   // the sharp distance changes with time
+  bindRange('dof-blur', () => state.dof.blur, (v) => { state.dof.blur = v; syncFocusUI(); scheduleAutosave(); }, (v) => (v === 0 ? 'off' : v.toFixed(1))),
+  bindRange('dof-distance', () => clamp(focusDistance(), 0.2, 30), (v) => {
+    const d = state.dof;
+    d.bone = ''; d.distance = v;
+    if (d.keys.length) keyFocus(v); else { syncFocusUI(); scheduleAutosave(); }
+  }, (v) => `${v.toFixed(2)} m`),
 ];
 function syncInspector() {
   for (const s of syncers) s();
@@ -847,7 +937,7 @@ function serialise() {
   return {
     app: 'cinematic', version: 2,
     duration: state.duration, fps: state.fps, time: state.time, loop: state.loop, autoKey: state.autoKey,
-    markers: state.markers, scene: state.scene, pose: state.pose, poseKeys: state.poseKeys, mount: state.mount, anim: state.anim, next: state.next, props: state.props,
+    markers: state.markers, scene: state.scene, pose: state.pose, poseKeys: state.poseKeys, dof: state.dof, queue: jobs.map((j) => ({ ...j, status: j.status === 'rendering' ? 'waiting' : j.status })), mount: state.mount, anim: state.anim, next: state.next, props: state.props,
     camera: { keys: track.toJSON(), rest: { pos: camLocal.position.toArray(), quat: camLocal.quaternion.toArray(), fov: shotCam.fov } },
     actor: { name: actors[1].name, pos: actorRoot.position.toArray(), quat: actorRoot.quaternion.toArray() },
   };
@@ -859,6 +949,7 @@ function load(data) {
   Object.assign(state, d, {
     duration: data.duration ?? d.duration, fps: data.fps ?? d.fps, time: 0, loop: !!data.loop, autoKey: !!data.autoKey,
     markers: data.markers ?? [], scene: { ...d.scene, ...data.scene }, pose: (data.version ?? 1) >= 2 ? { ...(data.pose ?? {}) } : {}, poseKeys: Array.isArray(data.poseKeys) ? data.poseKeys.map((k) => ({ t: k.t, pose: { ...k.pose } })).sort((x, y) => x.t - y.t) : [],
+    dof: { ...d.dof, ...data.dof, keys: Array.isArray(data.dof?.keys) ? data.dof.keys.map((k) => ({ t: k.t, distance: k.distance })).sort((x, y) => x.t - y.t) : [] },
     mount: { ...d.mount, ...data.mount }, anim: { ...d.anim, ...data.anim }, next: { ...d.next, ...data.next },
     props: Array.isArray(data.props) ? data.props.map((p) => ({ name: p.name, bone: p.bone ?? null, hidden: [...(p.hidden ?? [])] })) : [],
   });
@@ -879,6 +970,11 @@ function load(data) {
   poseDirty = false;
   rebuildPoseKeys();
   syncPoseUI();
+  if (!rendering) {                                    // the render queue travels with the project; a job cut off mid-render waits again
+    jobs.splice(0, jobs.length, ...(Array.isArray(data.queue) ? data.queue : []).map((j) => ({ ...j, status: j.status === 'rendering' ? 'waiting' : j.status })));
+    jobSeq = Math.max(jobSeq, 0, ...jobs.map((j) => j.id || 0));
+    syncQueueUI();
+  }
   for (const prop of props) {                          // apply saved settings to props that are loaded in this session
     const saved = state.props.find((p) => p.name === prop.name);
     if (!saved) continue;
@@ -925,7 +1021,8 @@ $('btn-new').addEventListener('click', () => {
   selectedKey = null;
   actorRoot.position.set(0, 0, 0); actorRoot.quaternion.identity();
   resetCameras();
-  applyScene(); setTime(0); keysChanged(); resize();
+  jobs.length = 0; syncQueueUI();
+  applyScene(); setTime(0); keysChanged(); resize(); syncPoseUI();
   setStatus('New project');
 });
 
@@ -1285,6 +1382,7 @@ function syncPoseUI() {
   sel.value = poseBoneName || '';
   sel.disabled = !names.length;
   const posed = Object.keys(state.pose).length;
+  syncFocusUI();
   $('pose-info').textContent = `${posed} bone(s) posed · ${state.poseKeys.length} pose key(s)` + (poseDirty ? ' · changed, not keyed' : '');
 }
 
@@ -1327,6 +1425,9 @@ function rebuildAnimBar() {
 
 $('pose-bone').addEventListener('change', (e) => { if (e.target.value && mode !== 'free') setMode('free'); setPoseBone(e.target.value || null); });
 $('btn-pose-key').addEventListener('click', () => keyPose());
+$('dof-bone').addEventListener('change', (e) => { state.dof.bone = e.target.value; syncFocusUI(); syncInspector(); scheduleAutosave(); });
+$('btn-dof-key').addEventListener('click', () => { keyFocus(); syncInspector(); });
+$('btn-dof-clear').addEventListener('click', () => { state.dof.keys = []; syncFocusUI(); scheduleAutosave(); });
 $('btn-pose-clear').addEventListener('click', () => { clearPose(); applyPose(); });
 
 $('anim-clip').addEventListener('change', (e) => {
@@ -1359,11 +1460,16 @@ function addJob(options = {}) {
     fps: Number(options.fps ?? $('q-fps').value),
     format: options.format ?? $('q-format').value,
     samples: Number(options.samples ?? $('q-blur').value),
+    background: options.background ?? $('q-bg').value,
+    depth: options.depth ?? $('q-depth').checked,
+    depthRange: clamp(Number(options.depthRange ?? $('q-depth-range').value) || 25, 1, 1000),
     status: 'waiting', done: 0, total: 0, note: '',
   };
+  if (job.format !== 'png') { job.background = 'scene'; job.depth = false; }       // video cannot carry transparency or a second pass
   job.total = frameTimes(job.from, job.to, job.fps).length;
   jobs.push(job);
   syncQueueUI();
+  scheduleAutosave();
   return job;
 }
 
@@ -1375,10 +1481,10 @@ function syncQueueUI() {
     title.textContent = job.name;
     const detail = document.createElement('span');
     detail.textContent = `${job.width}×${job.height} · ${job.fps} fps · ${job.format === 'mp4' ? 'MP4' : 'PNG frames'}`
-      + `${job.samples > 1 ? ` · blur ×${job.samples}` : ''} · ${job.from.toFixed(2)}–${job.to.toFixed(2)} s`;
+      + `${job.samples > 1 ? ` · blur ×${job.samples}` : ''}${job.background === 'transparent' ? ' · transparent' : ''}${job.depth ? ' · depth pass' : ''} · ${job.from.toFixed(2)}–${job.to.toFixed(2)} s`;
     const state2 = document.createElement('em');
     state2.textContent = job.status === 'rendering' ? `frame ${job.done} of ${job.total}${job.note}`
-      : job.status === 'waiting' ? `${job.total} frames, waiting` : `${job.status}${job.note}`;
+      : job.status === 'waiting' ? (job.done > 0 && job.format === 'png' ? `waiting, picks up at frame ${job.done + 1} of ${job.total}` : `${job.total} frames, waiting`) : `${job.status}${job.note}`;
     text.append(title, detail, state2);
     const bar = document.createElement('div');
     bar.className = 'q-bar';
@@ -1387,8 +1493,19 @@ function syncQueueUI() {
     remove.textContent = '✕';
     remove.title = 'Remove from the queue';
     remove.disabled = job.status === 'rendering';
-    remove.addEventListener('click', () => { jobs.splice(jobs.indexOf(job), 1); syncQueueUI(); });
-    li.append(text, remove, bar);
+    remove.addEventListener('click', () => { jobs.splice(jobs.indexOf(job), 1); syncQueueUI(); scheduleAutosave(); });
+    const side = document.createElement('div');
+    side.className = 'q-side';
+    if (job.status === 'stopped' || job.status === 'failed') {
+      const again = document.createElement('button');
+      again.textContent = '↻';
+      again.title = job.format === 'png' && job.done > 0 ? 'Carry on from the last finished frame (choose the same folder)' : 'Render this job again';
+      again.disabled = rendering;
+      again.addEventListener('click', () => { job.status = 'waiting'; job.note = ''; if (job.format !== 'png') job.done = 0; syncQueueUI(); scheduleAutosave(); });
+      side.append(again);
+    }
+    side.append(remove);
+    li.append(text, side, bar);
     return li;
   }));
   const waiting = jobs.some((j) => j.status === 'waiting');
@@ -1416,6 +1533,15 @@ async function runJob(job, hooks) {
   const accum = document.createElement('canvas');
   accum.width = width; accum.height = height;
   const ctx = accum.getContext('2d');
+  const transparent = job.background === 'transparent';
+  const total = state.dof.blur > 0 ? Math.max(job.samples, DOF_SAMPLES) : job.samples;      // samples averaged per frame
+  const acc = total > 1 || transparent ? makeAccumulator(width, height) : null;
+  let depthCanvas = null, depthSink = null;
+  if (job.depth) {
+    depthCanvas = document.createElement('canvas');
+    depthCanvas.width = width; depthCanvas.height = height;
+    depthSink = createPngSink(depthCanvas, `${job.name}_depth`, hooks.writeFile);
+  }
   renderer.setPixelRatio(1);
   renderer.setSize(width, height, false);
   renderer.setScissorTest(false);
@@ -1426,22 +1552,36 @@ async function runJob(job, hooks) {
   const sink = job.format === 'mp4' ? await createMp4Sink(accum, job.fps) : createPngSink(accum, job.name, hooks.writeFile);
   const times = frameTimes(job.from, job.to, job.fps);
   const started = performance.now();
+  const first = job.format === 'png' && job.done > 0 && job.done < times.length ? job.done : 0;   // carry on where a cut-off image sequence stopped
   job.status = 'rendering';
+  job.done = first;
+  if (transparent) { scene.background = null; scene.fog = null; renderer.setClearColor(0x000000, 0); ground.visible = false; grid.visible = false; }
   try {
-    for (let i = 0; i < times.length; i++) {
+    for (let i = first; i < times.length; i++) {
       if (queueStop) { job.status = 'stopped'; await sink.cancel(); return; }
-      subframeTimes(times[i], job.fps, job.samples).forEach((t, k) => {
-        state.time = t;                              // exact time, not snapped to the timeline's frame grid
-        camDirty = false;
-        poseDirty = false;
+      state.time = times[i];                         // exact time, not snapped to the timeline's frame grid
+      camDirty = false;
+      poseDirty = false;
+      if (acc) {                                     // average sub-frames (motion blur) and lens points (depth of field)
+        renderSamples(acc, total, job.samples > 1 ? subframeTimes(times[i], job.fps, total) : Array(total).fill(times[i]));
+        resolveTo(ctx, acc, total, transparent);
+      } else {
         applyTrack();
         renderer.render(scene, shotCam);
-        ctx.globalAlpha = 1 / (k + 1);               // running average of the sub-frames gives motion blur
         ctx.drawImage(canvas, 0, 0);
-      });
+      }
       await sink.add(i);
+      if (depthSink) {
+        state.time = times[i];
+        applyTrack();
+        setDepthLook(true, job.depthRange);
+        try { renderer.render(scene, shotCam); } finally { setDepthLook(false); }
+        depthCanvas.getContext('2d').drawImage(canvas, 0, 0);
+        await depthSink.add(i);
+      }
       job.done = i + 1;
-      const left = ((performance.now() - started) / (i + 1)) * (times.length - i - 1) / 1000;
+      if (job.format === 'png' && i % 30 === 29) scheduleAutosave();      // so a crash can pick up near here
+      const left = ((performance.now() - started) / (i + 1 - first)) * (times.length - i - 1) / 1000;
       job.note = left > 1 ? ` · about ${left > 90 ? `${Math.round(left / 60)} min` : `${Math.round(left)} s`} left` : '';
       if (i % 4 === 0) { syncQueueUI(); await new Promise((r) => setTimeout(r, 0)); }     // let the Stop button work
     }
@@ -1454,8 +1594,37 @@ async function runJob(job, hooks) {
     try { await sink.cancel(); } catch { /* already closed */ }
   } finally {
     setOverlays(true);
+    if (transparent) { scene.background = sky; renderer.setClearColor(0x000000, 1); ground.visible = true; applyScene(); }
+    scheduleAutosave();
   }
 }
+
+// ---- depth pass: near is white, `range` metres away and beyond is black; cut-out textures keep their shape
+const depthMats = new Map();
+let depthSaved = null;
+function depthMaterialFor(m) {
+  if (!depthMats.has(m)) {
+    const d = new THREE.MeshBasicMaterial({ color: 0xffffff, map: m.map || null, alphaTest: m.alphaTest, transparent: m.transparent, side: m.side, toneMapped: false });
+    d.onBeforeCompile = (shader) => { shader.fragmentShader = shader.fragmentShader.replace('#include <map_fragment>', '#include <map_fragment>\n  diffuseColor.rgb = vec3( 1.0 );'); };
+    depthMats.set(m, d);
+  }
+  return depthMats.get(m);
+}
+function setDepthLook(on, range) {
+  if (on) {
+    const swapped = [];
+    scene.traverse((o) => { if (o.isMesh && o.material && !Array.isArray(o.material)) { swapped.push([o, o.material]); o.material = depthMaterialFor(o.material); } });
+    depthSaved = { swapped, background: scene.background, fog: scene.fog };
+    scene.background = BLACK;
+    scene.fog = new THREE.Fog(0x000000, 0, range);
+  } else if (depthSaved) {
+    for (const [o, m] of depthSaved.swapped) o.material = m;
+    scene.background = depthSaved.background;
+    scene.fog = depthSaved.fog;
+    depthSaved = null;
+  }
+}
+const BLACK = new THREE.Color(0x000000);
 
 /** Render every waiting job in order. `hooks` lets a caller supply where files go (used by automated checks). */
 async function runQueue(hooks = {}) {
@@ -1551,6 +1720,7 @@ function sceneSummary() {
       key_positions_are: state.mount.bone ? 'relative to the mount bone' : 'world space',
       keys: track.keys.map((k) => ({ time: k.t, position: k.pos.map(round3), focal_mm: Math.round(focalFromFov(k.fov)), ease: k.ease })),
     },
+    depth_of_field: { blur: state.dof.blur, focus_on_bone: state.dof.bone || null, sharp_at_metres: +focusDistance().toFixed(3), focus_keys: state.dof.keys },
     scene: { time_of_day: state.scene.tod, sun_heading: state.scene.azimuth, exposure: state.scene.exposure, fog: state.scene.fog },
     actor: {
       name: actors[1].name,
@@ -1613,6 +1783,17 @@ const toolHandlers = {
     if (i.fog !== undefined) s.fog = numIn(i.fog, 'fog', 0, 0.15);
     applyScene();
     return JSON.stringify({ time_of_day: s.tod, sun_heading: s.azimuth, exposure: s.exposure, fog: s.fog });
+  },
+  set_focus: (i) => {
+    const d = state.dof;
+    if (i.blur !== undefined) d.blur = numIn(i.blur, 'blur', 0, 10);
+    if (i.clear_keys) d.keys = [];
+    if (i.bone !== undefined) { if (i.bone && !bones[i.bone]) throw new Error(`No bone named "${i.bone}". Call list_bones.`); d.bone = i.bone || ''; }
+    if (i.distance !== undefined) { d.bone = ''; d.distance = numIn(i.distance, 'distance', 0.05, 1000); if (d.keys.length && !i.key) keyFocus(d.distance); }
+    if (i.key) { applyTrack(); keyFocus(i.distance !== undefined ? d.distance : focusDistance()); }
+    applyTrack();
+    syncFocusUI(); syncInspector(); scheduleAutosave();
+    return JSON.stringify({ blur: d.blur, focus_on_bone: d.bone || null, sharp_at_metres: +focusDistance().toFixed(3), focus_keys: d.keys });
   },
   mount_camera: (i) => {
     if (!Object.keys(bones).length) throw new Error('The actor has no skeleton. Import a rigged model to mount the camera on it.');
@@ -1744,7 +1925,7 @@ const TOOL_LABELS = {
   get_scene: 'Reading the scene', set_time: 'Moving the playhead', set_timeline: 'Changing the timeline',
   set_camera: 'Placing the camera', set_camera_keys: 'Keying the camera', delete_camera_keys: 'Deleting camera keys',
   set_scene: 'Adjusting sky and light', list_animations: 'Checking the animations', set_prop: 'Adjusting a prop', set_animation: 'Setting the animation', mount_camera: 'Mounting the camera', move_actor: 'Moving the actor', add_markers: 'Adding markers',
-  list_bones: 'Reading the skeleton', pose_bones: 'Posing bones', key_pose: 'Keying the pose', delete_pose_keys: 'Deleting pose keys', reset_pose: 'Resetting the pose', capture_view: 'Looking at the result',
+  list_bones: 'Reading the skeleton', pose_bones: 'Posing bones', key_pose: 'Keying the pose', set_focus: 'Setting the focus', delete_pose_keys: 'Deleting pose keys', reset_pose: 'Resetting the pose', capture_view: 'Looking at the result',
 };
 const aiMessages = [];
 let aiAbort = null, aiUndo = null, aiClientOverride = null;
@@ -1858,6 +2039,6 @@ tick();
 // Handle for automated checks and for poking at things from the console.
 window.app = {
   state, get track() { return track; }, get bones() { return bones; }, shotCam, freeCam, actorRoot,
-  setTime, setMode, setKeyNow, setMount, applyMountPreset, selectActor, renderStill, serialise, load, importFiles, importProp, get props() { return props; }, importAnimations, setAnimation, setNext, keyPose, setPoseBone, gizmo, get poseKeys() { return state.poseKeys; }, execTool, addJob, runQueue, get jobs() { return jobs; },
+  setTime, setMode, setKeyNow, setMount, applyMountPreset, selectActor, renderStill, serialise, load, importFiles, importProp, get props() { return props; }, importAnimations, setAnimation, setNext, keyPose, setPoseBone, keyFocus, focusDistance, gizmo, get poseKeys() { return state.poseKeys; }, execTool, addJob, runQueue, get jobs() { return jobs; },
   assistant: { send: aiSend, messages: aiMessages, useClient(c) { aiClientOverride = c; } },
 };
