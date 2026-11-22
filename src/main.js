@@ -7,6 +7,7 @@ import { FlyLook } from './flylook.js';
 import { toLocal, toWorld, reframeKeys, bodyAxes } from './mount.js';
 import { Clip } from './anim.js';
 import { decodeDDS, gameNormalToStandard, gameSpecToRoughness, applyCamo } from './dds.js';
+import { twoBoneReach } from './ik.js';
 import { frameTimes, subframeTimes, safeName, canMakeMp4, createMp4Sink, createPngSink, lensOffsets, addSample, resolveSamples, focusAt } from './renderqueue.js';
 import { createClient, runTurn, describeError, MODEL } from './assistant.js';
 
@@ -23,9 +24,9 @@ const AUTOSAVE_KEY = 'cinematic.autosave.v1';
 const defaults = () => ({
   duration: 10, fps: 60, time: 0, loop: false, autoKey: false,
   markers: [],
-  mount: { bone: null, lookAt: null, level: false, roll: 0 },   // what the shot camera rides on
+  mount: { bone: null, lookAt: null, level: false, roll: 0, lag: 0 },   // what the shot camera rides on
   props: [],                                  // settings for attached props, by name: { name, bone, hidden }
-  anim: { name: null, start: 0, speed: 1, loop: true, travel: true },   // which imported animation plays on the actor
+  anim: { name: null, start: 0, speed: 1, loop: true, travel: true, ground: true },   // which imported animation plays on the actor
   next: { name: null, at: 2, blend: 0.25, speed: 1, loop: false },      // an animation that takes over from it part-way through
   dof: { blur: 0, bone: '', distance: 3, keys: [] },   // depth of field: how much blur, and what stays sharp (a bone, or a keyed distance)
   poseKeys: [],                               // poses keyed over time: [{ t, pose: { bone: offset } }]
@@ -200,6 +201,7 @@ function applyActor() {
     origin.position.add(_ra);
     origin.quaternion.multiply(_rqa);
   }
+  if (first && state.anim.ground !== false) keepAboveGround();
   if (state.poseKeys.length && !poseDirty) state.pose = poseAt(state.time);
   if (poseBoneName && bones[poseBoneName]) lastBase.set(poseBoneName, bones[poseBoneName].quaternion.clone());
   baseQuat.clear();
@@ -211,6 +213,27 @@ function applyActor() {
   }
 }
 const applyPose = applyActor;
+
+// ---- ground contact: animations are made for the game's uneven floors, so a hand or foot can sink into flat ground
+const LIMBS = [['j_shoulder_le', 'j_elbow_le', 'j_wrist_le'], ['j_shoulder_ri', 'j_elbow_ri', 'j_wrist_ri'], ['j_hip_le', 'j_knee_le', 'j_ankle_le'], ['j_hip_ri', 'j_knee_ri', 'j_ankle_ri']];
+const GROUND_CLEAR = 0.015;                          // metres a joint is kept above the ground (roughly a finger's thickness)
+const _ia = new THREE.Vector3(), _ib = new THREE.Vector3(), _ic = new THREE.Vector3(), _iq = new THREE.Quaternion(), _iv = new THREE.Vector3();
+function keepAboveGround() {
+  actorRoot.updateMatrixWorld(true);
+  for (const [upperName, midName, endName] of LIMBS) {
+    const upper = bones[upperName], mid = bones[midName], end = bones[endName];
+    if (!upper || !mid || !end) continue;
+    let low = Infinity;                              // lowest joint of the hand or foot, fingers and toes included
+    end.traverse((o) => { if (bones[o.name] === o && !o.name.startsWith('tag_')) low = Math.min(low, o.matrixWorld.elements[13]); });
+    const lift = GROUND_CLEAR - low;
+    if (!(lift > 0)) continue;
+    const a = upper.getWorldPosition(_ia).toArray(), b = mid.getWorldPosition(_ib).toArray(), c = end.getWorldPosition(_ic).toArray();
+    const r = twoBoneReach(a, b, c, [c[0], c[1] + lift, c[2]]);
+    worldRotate(upper, _iq.setFromAxisAngle(_iv.fromArray(r.bendAxis), r.upperBend));
+    worldRotate(mid, _iq.setFromAxisAngle(_iv.fromArray(r.bendAxis), r.midBend));
+    worldRotate(upper, _iq.setFromAxisAngle(_iv.fromArray(r.swingAxis), r.swing));
+  }
+}
 
 let poseDirty = false;                               // the pose was changed by hand and not keyed yet
 let poseBoneName = null;                             // bone being posed with the handle in the viewport
@@ -365,13 +388,43 @@ function setTime(t) {
 const lookAtActive = () => !!(state.mount.lookAt && bones[state.mount.lookAt]);
 
 /** Work out where the mount is right now. With nothing mounted the frame is the world itself. */
+function boneFrame(bone, out) {
+  actorRoot.updateMatrixWorld(true);
+  bone.getWorldPosition(out.position);
+  if (state.mount.level) out.quaternion.identity();             // ride the position only, keep the horizon level
+  else bone.getWorldQuaternion(out.quaternion);
+}
+const lagFrame = { position: new THREE.Vector3(), quaternion: new THREE.Quaternion() };
+const LAG_STEPS = 8;
+const _lq = new THREE.Quaternion();
+
 function updateFrame() {
   const bone = state.mount.bone && bones[state.mount.bone];
   if (!bone) { mountFrame.position.set(0, 0, 0); mountFrame.quaternion.identity(); return; }
-  actorRoot.updateMatrixWorld(true);
-  bone.getWorldPosition(mountFrame.position);
-  if (state.mount.level) mountFrame.quaternion.identity();      // ride the position only, keep the horizon level
-  else bone.getWorldQuaternion(mountFrame.quaternion);
+  const lag = state.mount.lag || 0;
+  if (!(lag > 0)) { boneFrame(bone, mountFrame); return; }
+  // Smoothing: the mount is where the bone has recently been, weighted towards now. Worked out from the animation
+  // itself rather than from the previous frame, so scrubbing and rendering at any frame rate give the same result.
+  const now = state.time;
+  let total = 0;
+  for (let k = LAG_STEPS - 1; k >= 0; k--) {
+    const age = (3 * lag * k) / (LAG_STEPS - 1), w = Math.exp(-age / lag);
+    state.time = Math.max(0, now - age);
+    if (k) applyActor();
+    else { state.time = now; applyActor(); }
+    boneFrame(bone, lagFrame);
+    const root = bones.tag_origin || actorRoot;     // measured against the travelling body, so the camera smooths the shake without falling behind the run
+    root.getWorldQuaternion(_lq).invert();
+    root.worldToLocal(lagFrame.position);
+    if (!state.mount.level) lagFrame.quaternion.premultiply(_lq);
+    total += w;
+    if (total === w) { mountFrame.position.copy(lagFrame.position); mountFrame.quaternion.copy(lagFrame.quaternion); }
+    else { mountFrame.position.lerp(lagFrame.position, w / total); mountFrame.quaternion.slerp(lagFrame.quaternion, w / total); }
+    if (!k) {                                       // the last step is the present: back out to world space from here
+      root.localToWorld(mountFrame.position);
+      if (!state.mount.level) mountFrame.quaternion.premultiply(_lq.invert());
+    }
+  }
 }
 
 /** The camera was placed in world space; remember that placement relative to the mount. */
@@ -827,6 +880,7 @@ const syncers = [
   bindRange('scn-exposure', () => state.scene.exposure, (v) => { state.scene.exposure = v; applyScene(); scheduleAutosave(); }, (v) => v.toFixed(2)),
   bindRange('scn-fog', () => state.scene.fog, (v) => { state.scene.fog = v; applyScene(); scheduleAutosave(); }, (v) => (v === 0 ? 'off' : v.toFixed(3))),
   () => { if (state.dof.blur > 0 && (state.dof.keys.length || state.dof.bone)) syncFocusUI(); },   // the sharp distance changes with time
+  bindRange('cam-lag', () => state.mount.lag || 0, (v) => setMount({ lag: v }), (v) => (v === 0 ? 'off' : `${v.toFixed(2)} s`)),
   bindRange('dof-blur', () => state.dof.blur, (v) => { state.dof.blur = v; syncFocusUI(); scheduleAutosave(); }, (v) => (v === 0 ? 'off' : v.toFixed(1))),
   bindRange('dof-distance', () => clamp(focusDistance(), 0.2, 30), (v) => {
     const d = state.dof;
@@ -1350,6 +1404,7 @@ function syncAnimUI() {
   $('anim-speed-out').textContent = `${state.anim.speed.toFixed(2)}×`;
   $('anim-loop').checked = state.anim.loop;
   $('anim-travel').checked = state.anim.travel;
+  $('anim-ground').checked = state.anim.ground !== false;
   const then = $('anim-next');
   then.replaceChildren(new Option('Nothing', ''), ...names.map((n) => new Option(n, n)));
   then.value = nextClip() ? state.next.name : '';
@@ -1438,6 +1493,7 @@ $('anim-start').addEventListener('change', (e) => setAnimation({ start: Number(e
 $('anim-speed').addEventListener('input', (e) => setAnimation({ speed: Number(e.target.value) }));
 $('anim-loop').addEventListener('change', (e) => setAnimation({ loop: e.target.checked }));
 $('anim-travel').addEventListener('change', (e) => setAnimation({ travel: e.target.checked }));
+$('anim-ground').addEventListener('change', (e) => setAnimation({ ground: e.target.checked }));
 $('anim-next').addEventListener('change', (e) => {
   const clip = clipLibrary.get(e.target.value);
   setNext({ name: e.target.value || null, ...(clip ? { loop: clip.loop } : {}) });
@@ -1804,8 +1860,9 @@ const toolHandlers = {
     if (i.bone !== undefined) next.bone = i.bone || null;
     if (i.look_at_bone !== undefined) next.lookAt = i.look_at_bone || null;
     if (i.keep_level !== undefined) next.level = !!i.keep_level;
+    if (i.smoothing !== undefined) next.lag = numIn(i.smoothing, 'smoothing', 0, 1);
     setMount(next);
-    return JSON.stringify({ bone: state.mount.bone, look_at_bone: state.mount.lookAt, keep_level: state.mount.level });
+    return JSON.stringify({ bone: state.mount.bone, look_at_bone: state.mount.lookAt, keep_level: state.mount.level, smoothing: state.mount.lag || 0 });
   },
   list_animations: () => JSON.stringify([...clipLibrary.values()].map((c) => ({ name: c.name, seconds: round3(c.duration), made_to_loop: c.loop, travels_metres_per_pass: round3(c.travelPerPass * 0.0254), usable: !c.unnamed }))),
   set_animation: (i) => {
@@ -1816,6 +1873,7 @@ const toolHandlers = {
     if (i.speed !== undefined) next.speed = numIn(i.speed, 'speed', 0.05, 4);
     if (i.loop !== undefined) next.loop = !!i.loop;
     if (i.travel !== undefined) next.travel = !!i.travel;
+    if (i.keep_above_ground !== undefined) next.ground = !!i.keep_above_ground;
     setAnimation(next);
     if (i.then !== undefined || i.switch_at !== undefined || i.blend !== undefined) {
       if (i.then && !clipLibrary.has(i.then)) throw new Error(`No imported animation named "${i.then}". Call list_animations to see what is loaded.`);

@@ -73,6 +73,7 @@
         <label class="row"><span>Ride on</span><select id="cam-mount" title="The camera travels with this bone"></select></label>
         <label class="row"><span>Stay aimed at</span><select id="cam-lookat" title="The camera keeps pointing at this bone wherever it rides"></select></label>
         <label class="row check"><input id="cam-level" type="checkbox"><span>Keep the horizon level (ride the position only)</span></label>
+        <label class="row"><span>Smoothing</span><input id="cam-lag" type="range" min="0" max="0.5" step="0.01" title="Lets the camera trail the bone slightly, taking the harsh shake out of a mounted shot"><output id="cam-lag-out"></output></label>
         <div class="row buttons">
           <button data-mount-preset="gun" title="On the weapon hand, wide lens, locked on the face">Gun cam</button>
           <button data-mount-preset="helmet" title="At the eyes, looking where the head looks">Helmet cam</button>
@@ -96,6 +97,7 @@
         <label class="row"><span>Speed</span><input id="anim-speed" type="range" min="0.1" max="2" step="0.05"><output id="anim-speed-out"></output></label>
         <label class="row check"><input id="anim-loop" type="checkbox"><span>Repeat for the whole timeline</span></label>
         <label class="row check"><input id="anim-travel" type="checkbox"><span>Travel: move him the way the animation moves</span></label>
+        <label class="row check"><input id="anim-ground" type="checkbox"><span>Keep hands and feet above the ground</span></label>
         <label class="row"><span>Then play</span><select id="anim-next" title="A second animation that takes over part-way through, such as a death after a sprint"></select></label>
         <label class="row"><span>Switch at</span><input id="anim-next-at" type="number" min="0" step="0.1"><output>s</output></label>
         <label class="row"><span>Blend over</span><input id="anim-next-blend" type="number" min="0" max="2" step="0.05"><output>s</output></label>
