@@ -93,7 +93,7 @@ function followLights() {
   const centre = bones.j_mainroot || bones.tag_origin;
   if (centre) { actorRoot.updateMatrixWorld(true); centre.getWorldPosition(lightFocus); } else lightFocus.copy(actorRoot.position);
   lightFocus.y = 1;
-  sun.target.position.copy(lightFocus); sun.position.copy(lightFocus).add(sunOffset);
+  sun.target.position.copy(lightFocus); sun.position.copy(lightFocus).addScaledVector(sunOffset, mapName ? 3 : 1);
   rim.target.position.copy(lightFocus); rim.position.copy(lightFocus).add(rimOffset);
   fill.target.position.copy(lightFocus); fill.position.copy(shotCam.position); fill.position.y += 0.6;
 }
@@ -1505,6 +1505,8 @@ async function importMap(files, preferName) {
     }
   });
   mapName = loaded.name;
+  Object.assign(sun.shadow.camera, { left: -32, right: 32, top: 32, bottom: -32, far: 220 });   // shadows cover the buildings around him, not just him
+  sun.shadow.camera.updateProjectionMatrix();
   applyScene();
   const box = new THREE.Box3().setFromObject(mapRoot), centre = box.getCenter(new THREE.Vector3()), size = box.getSize(new THREE.Vector3());
   orbit.target.copy(centre);
