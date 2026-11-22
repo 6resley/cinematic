@@ -65,6 +65,13 @@ The **Assistant** tab lets you describe what you want in plain words ("slow push
 
 Asset library, map environments, motion-vector passes, and a packaged desktop build.
 
+## Ripping tools
+
+`tools/iw4x_rip.py` and `tools/iw4x_textures.py` are the scripts that export models, animations and maps from a running copy of the game and pull their textures from the game's archives. They read your own installed game; nothing they produce belongs in this repository. Run them from an Administrator command prompt on the PC where the game is running:
+
+- `python iw4x_rip.py <word>` exports models whose name contains the word (with skeleton), `--anims <word>` exports animations, `--map` exports the loaded map with its placed and movable models.
+- `python iw4x_textures.py --ripped <folder>` converts the textures those exports list.
+
 ## Development
 
 ```bash
