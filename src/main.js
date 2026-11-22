@@ -1463,6 +1463,16 @@ const props = [];
 const mapRoot = new THREE.Group();
 scene.add(mapRoot);
 let mapName = null;
+/** How a map material should be drawn, judged from its name (the game's own material settings are not exported). */
+function mapMaterialKind(name) {
+  const n = name.toLowerCase().split('/').pop();
+  if (/^(shadowcaster|clip|caulk|nodraw|portal|trigger|hint|lightgrid|reflection)/.test(n) || /^tools?_/.test(n)) return 'hidden';
+  if (/glass/.test(n)) return 'glass';
+  if (/fence|wire|grate|chainlink|foliage|leaf|branch|grass/.test(n) && !/decal/.test(n)) return 'cutout';
+  if (/decal|_dec_|stain|grime|prints|puddle|leak|cracks|papers|frost|tireskid|drawing/.test(n)) return 'decal';
+  return 'solid';
+}
+
 async function importMap(files, preferName) {
   const loaded = await loadModelFolder(files, preferName);
   if (!loaded) return null;
@@ -1474,6 +1484,13 @@ async function importMap(files, preferName) {
     meshes++;
     o.castShadow = true; o.receiveShadow = true;
     for (const m of Array.isArray(o.material) ? o.material : [o.material]) {
+      const kind = mapMaterialKind(m.name);
+      if (kind === 'hidden') { o.visible = false; continue; }
+      if (kind === 'decal') {                              // stains, prints, lettering: laid over the surface beneath
+        Object.assign(m, { transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2, alphaTest: 0.02 });
+        o.castShadow = false; o.renderOrder = 2;
+      } else if (kind === 'cutout') { m.alphaTest = 0.5; m.transparent = false; }   // fences, wires, grates
+      else if (kind === 'glass') { Object.assign(m, { transparent: true, opacity: 0.35, depthWrite: false, roughness: 0.1 }); o.castShadow = false; o.renderOrder = 3; }
       for (const key of ['map', 'normalMap', 'roughnessMap']) if (m[key]) { m[key].wrapS = m[key].wrapT = THREE.RepeatWrapping; m[key].needsUpdate = true; }   // world textures tile
     }
   });
