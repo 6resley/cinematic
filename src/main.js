@@ -1521,6 +1521,9 @@ const _ray = new THREE.Raycaster();
 /** Stand the character on whatever the middle of the current view is looking at (map or ground). */
 function placeActorAtView() {
   const cam = mode === 'camera' ? shotCam : freeCam;
+  applyTrack();
+  cam.updateMatrixWorld(true);                         // aim from where the camera is now, not where it was last drawn
+  mapRoot.updateMatrixWorld(true);
   _ray.setFromCamera(new THREE.Vector2(0, 0), cam);
   const hit = _ray.intersectObjects(mapName ? [mapRoot] : [ground], true)[0];
   if (!hit) { setStatus('Nothing under the middle of the view to stand him on'); return false; }
