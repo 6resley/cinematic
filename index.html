@@ -85,6 +85,7 @@
           <button data-mount-preset="boot" title="Low by the right foot, looking up at the face">Boot cam</button>
         </div>
         <div class="row buttons">
+          <button data-mount-preset="rail" title="Clamped to the side of the barrel, tilted, looking back up at him past the out-of-focus gun">Side rail cam</button>
           <button data-mount-preset="barrel" title="Fixed on the weapon behind the muzzle, looking where the barrel points">Barrel POV</button>
         </div>
         <h3>Placement</h3>
@@ -119,6 +120,18 @@
         <h3>Props</h3>
         <div id="props-list"></div>
         <p class="hint" id="props-info"></p>
+        <h3>Look</h3>
+        <label class="row"><span>Preset</span><select id="look-preset" title="A ready-made finish. Adjust it with the sliders below."></select></label>
+        <label class="row"><span>Glow</span><input id="look-bloom" type="range" min="0" max="2" step="0.05"><output id="look-bloom-out"></output></label>
+        <label class="row"><span>Contact shadow</span><input id="look-ao" type="range" min="0" max="1" step="0.05"><output id="look-ao-out"></output></label>
+        <label class="row"><span>Colour</span><input id="look-sat" type="range" min="0" max="2" step="0.02"><output id="look-sat-out"></output></label>
+        <label class="row"><span>Contrast</span><input id="look-contrast" type="range" min="0.5" max="2" step="0.02"><output id="look-contrast-out"></output></label>
+        <label class="row"><span>Vignette</span><input id="look-vignette" type="range" min="0" max="1" step="0.02"><output id="look-vignette-out"></output></label>
+        <label class="row"><span>Grain</span><input id="look-grain" type="range" min="0" max="0.3" step="0.01"><output id="look-grain-out"></output></label>
+        <label class="row"><span>Rim light</span><input id="look-rim" type="range" min="0" max="6" step="0.1"><output id="look-rim-out"></output></label>
+        <label class="row"><span>Fill light</span><input id="look-fill" type="range" min="0" max="6" step="0.1" title="Soft light from the camera side, so a back-lit character is not a black shape"><output id="look-fill-out"></output></label>
+        <label class="row check"><input id="look-keepred" type="checkbox"><span>Keep reds in colour</span></label>
+        <label class="row check"><input id="look-wet" type="checkbox"><span>Dark wet ground</span></label>
         <h3>Sky and sun</h3>
         <label class="row"><span>Time of day</span><input id="scn-tod" type="range" min="0" max="24" step="0.1"><output id="scn-tod-out"></output></label>
         <label class="row"><span>Sun heading</span><input id="scn-azimuth" type="range" min="0" max="360" step="1"><output id="scn-azimuth-out"></output></label>

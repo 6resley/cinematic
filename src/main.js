@@ -10,6 +10,7 @@ import { decodeDDS, gameNormalToStandard, gameSpecToRoughness, applyCamo } from 
 import { twoBoneReach } from './ik.js';
 import { RGBELoader } from 'three/addons/loaders/RGBELoader.js';
 import { createWeather, WEATHER } from './weather.js';
+import { createLook, lookIsActive, LOOKS, LOOK_OFF } from './look.js';
 import { frameTimes, subframeTimes, safeName, canMakeMp4, createMp4Sink, createPngSink, lensOffsets, addSample, resolveSamples, focusAt } from './renderqueue.js';
 import { createClient, runTurn, describeError, MODEL } from './assistant.js';
 
@@ -35,6 +36,7 @@ const defaults = () => ({
   poseKeys: [],                               // poses keyed over time: [{ t, pose: { bone: offset } }]
   pose: {},                                   // bone name -> rotation offset layered on top of the animation (or the imported pose)
   scene: { tod: 15, azimuth: 60, exposure: 1, fog: 0, grid: true, weather: 'clear' },
+  look: { ...LOOK_OFF, tint: [...LOOK_OFF.tint] },   // the finish applied after the scene is drawn: glow, grade, grain, rim light
 });
 const state = defaults();
 let track = new CameraTrack();
@@ -56,11 +58,45 @@ const scene = new THREE.Scene();
 const hemi = new THREE.HemisphereLight(0xcfe0ff, 0x30302c, 0.8);
 const sun = new THREE.DirectionalLight(0xffffff, 3);
 sun.castShadow = true;
-sun.shadow.mapSize.set(2048, 2048);
-Object.assign(sun.shadow.camera, { left: -6, right: 6, top: 6, bottom: -6, near: 0.5, far: 60 });
+sun.shadow.mapSize.set(4096, 4096);
+Object.assign(sun.shadow.camera, { left: -5, right: 5, top: 5, bottom: -5, near: 0.5, far: 60 });
+sun.shadow.radius = 3;
 sun.shadow.bias = -0.0008;
 sun.shadow.normalBias = 0.02;
-scene.add(hemi, sun, sun.target);
+const rim = new THREE.DirectionalLight(0xbcd2ff, 0);   // back light that separates him from the background; part of the look
+const fill = new THREE.DirectionalLight(0xffffff, 0);  // soft light from the camera's side so a back-lit subject is not a silhouette; part of the look
+scene.add(hemi, sun, sun.target, rim, rim.target, fill, fill.target);
+
+// A sky that is lighter at the horizon and glows around the sun, instead of one flat colour.
+const skyDome = new THREE.Mesh(new THREE.SphereGeometry(450, 32, 16), new THREE.ShaderMaterial({
+  side: THREE.BackSide, depthWrite: false, fog: false,
+  uniforms: { uZenith: { value: new THREE.Color() }, uHorizon: { value: new THREE.Color() }, uSun: { value: new THREE.Vector3(0, 1, 0) }, uGlow: { value: new THREE.Color() } },
+  vertexShader: 'varying vec3 vDir; void main() { vDir = normalize(position); gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+  fragmentShader: `uniform vec3 uZenith, uHorizon, uSun, uGlow; varying vec3 vDir;
+    void main() {
+      vec3 d = normalize(vDir);
+      vec3 c = mix(uHorizon, uZenith, pow(clamp(d.y, 0.0, 1.0), 0.55));
+      float s = max(dot(d, uSun), 0.0);
+      c += uGlow * (pow(s, 12.0) * 0.35 + pow(s, 400.0) * 6.0);
+      gl_FragColor = vec4(c, 1.0);
+      #include <tonemapping_fragment>
+      #include <colorspace_fragment>
+    }`,
+}));
+skyDome.renderOrder = -10;
+skyDome.frustumCulled = false;
+skyDome.onBeforeRender = (r, s, camera) => { skyDome.position.setFromMatrixPosition(camera.matrixWorld); skyDome.updateMatrixWorld(); };
+scene.add(skyDome);
+const sunOffset = new THREE.Vector3(0, 25, 0), rimOffset = new THREE.Vector3(0, 10, -20), lightFocus = new THREE.Vector3();
+/** Keep the sun, its shadow and the rim light centred on the character wherever the animation has carried him. */
+function followLights() {
+  const centre = bones.j_mainroot || bones.tag_origin;
+  if (centre) { actorRoot.updateMatrixWorld(true); centre.getWorldPosition(lightFocus); } else lightFocus.copy(actorRoot.position);
+  lightFocus.y = 1;
+  sun.target.position.copy(lightFocus); sun.position.copy(lightFocus).add(sunOffset);
+  rim.target.position.copy(lightFocus); rim.position.copy(lightFocus).add(rimOffset);
+  fill.target.position.copy(lightFocus); fill.position.copy(shotCam.position); fill.position.y += 0.6;
+}
 
 const ground = new THREE.Mesh(new THREE.PlaneGeometry(400, 400), new THREE.MeshStandardMaterial({ color: 0x8d9094, roughness: 1 }));
 ground.rotation.x = -Math.PI / 2;
@@ -365,12 +401,18 @@ function vec3In(v, name) {
 }
 
 // ------------------------------------------------------------------ scene look
+const WHITE = new THREE.Color(0xffffff);
 const NIGHT = new THREE.Color(0x0a0f1c), HORIZON = new THREE.Color(0xd98f5c), DAY = new THREE.Color(0x7fa9d6);
 const SUN_LOW = new THREE.Color(0xffa860), SUN_HIGH = new THREE.Color(0xfff4e6), MOON = new THREE.Color(0x9bb8ff);
 const sky = new THREE.Color();
 scene.background = sky;
 const weather = createWeather(() => state.time);
 scene.add(weather.group);
+const look = createLook(renderer, scene);
+/** Draw the scene through a camera, with the look unless `plain`. */
+function renderShot(cam, plain = false) {
+  if (!plain && lookIsActive(state.look)) look.render(cam, state.look, state.time); else renderer.render(scene, cam);
+}
 let skyImage = null;                                 // an imported panorama used as the sky and as the light from it (not saved with the project)
 
 function applyScene() {
@@ -384,10 +426,22 @@ function applyScene() {
   const night = e <= -0.12;
   const el = Math.asin(clamp(Math.abs(e), 0.08, 1));
   const az = THREE.MathUtils.degToRad(s.azimuth + (night ? 180 : 0));
-  sun.position.set(Math.cos(el) * Math.sin(az), Math.sin(el), Math.cos(el) * Math.cos(az)).multiplyScalar(25);
+  sunOffset.set(Math.cos(el) * Math.sin(az), Math.sin(el), Math.cos(el) * Math.cos(az)).multiplyScalar(25);
+  rimOffset.set(-Math.sin(az), 0.55, -Math.cos(az)).multiplyScalar(20);      // from behind, opposite the sun
+  rim.intensity = state.look.rim || 0;
+  fill.intensity = state.look.fill || 0;
+  const dome = skyDome.material.uniforms;
+  dome.uHorizon.value.copy(sky).lerp(WHITE, night ? 0.05 : 0.4);
+  dome.uZenith.value.copy(sky).multiplyScalar(night ? 0.5 : 0.62);
+  dome.uSun.value.copy(sunOffset).normalize();
+  skyDome.visible = !skyImage;
+  ground.material.color.set(state.look.wet ? 0x1b1d21 : 0x8d9094);           // wet ground is dark and catches the light
+  ground.material.roughness = state.look.wet ? 0.28 : 1;
+  followLights();
   if (night) { sun.color.copy(MOON); sun.intensity = 1.1; }
   else { sun.color.copy(SUN_LOW).lerp(SUN_HIGH, clamp(e * 1.6, 0, 1)); sun.intensity = 3.2 * Math.pow(Math.max(e, 0), 0.6) + 0.9 * twilight; }
   hemi.intensity = 0.3 + 0.6 * Math.max(0, e) + 0.35 * twilight;
+  dome.uGlow.value.copy(sun.color).multiplyScalar(night ? 0.25 : 1);
   renderer.toneMappingExposure = s.exposure;
   scene.background = skyImage || sky;
   scene.environment = skyImage;
@@ -474,6 +528,7 @@ function applyTrack() {
   }
   mountGroup.position.copy(mountFrame.position);
   mountGroup.quaternion.copy(mountFrame.quaternion);
+  followLights();
 }
 
 function setKeyNow() {
@@ -501,6 +556,7 @@ const MOUNT_PRESETS = {
   gun: { label: 'Gun cam', bones: ['tag_weapon_right', 'j_gun', 'j_wrist_ri'], lookAt: 'j_head', level: false, focal: 16, offset: [0.55, 0.10, 0.05] },
   helmet: { label: 'Helmet cam', bones: ['j_head'], lookAt: null, level: false, focal: 18, offset: [0.25, 0.08, 0] },   // just in front of the face, clear of a hood
   shoulder: { label: 'Over shoulder', bones: ['j_spine4', 'j_spineupper'], lookAt: null, level: true, focal: 28, offset: [-0.5, 0.22, 0.28] },
+  rail: { label: 'Side rail cam', bones: ['tag_weapon_right', 'j_gun', 'j_wrist_ri'], lookAt: null, level: false, focal: 14, offset: [0.55, 0.10, 0.05] },
   barrel: { label: 'Barrel POV', bones: ['tag_weapon_right', 'j_gun', 'j_wrist_ri'], lookAt: null, level: false, focal: 16, offset: [0.55, 0.10, 0.05] },
   boot: { label: 'Boot cam', bones: ['j_ankle_ri', 'j_ball_ri'], lookAt: 'j_head', level: true, focal: 14, offset: [0.45, 0.04, 0.2] },
 };
@@ -546,7 +602,7 @@ function gunShape(prop) {
 function applyMountPreset(id) {
   const preset = MOUNT_PRESETS[id];
   if (!preset) throw new Error(`Unknown mount preset "${id}"`);
-  if (id === 'gun' || id === 'barrel') {                                   // sit on the weapon itself when one is attached
+  if (id === 'gun' || id === 'barrel' || id === 'rail') {                                   // sit on the weapon itself when one is attached
     const prop = props.find((p) => p.bone && bones[p.bone]);
     const gun = prop && gunShape(prop);
     if (gun) {
@@ -556,17 +612,25 @@ function applyMountPreset(id) {
         shotCam.position.copy(gun.muzzle).addScaledVector(gun.dir, 0.1).addScaledVector(gun.up, 0.1);
         shotCam.up.copy(gun.up);
         shotCam.lookAt(face ? face.getWorldPosition(new THREE.Vector3()) : gun.muzzle.clone().addScaledVector(gun.dir, -1).addScaledVector(gun.up, 0.07));
+      } else if (id === 'rail') {                                          // clamped to the side of the barrel, looking back up at him past the gun
+        const side = new THREE.Vector3().crossVectors(gun.dir, gun.up).normalize();
+        shotCam.position.copy(gun.muzzle).addScaledVector(gun.dir, -0.12).addScaledVector(side, 0.11).addScaledVector(gun.up, -0.03);
+        shotCam.up.copy(gun.up);
+        shotCam.lookAt(face ? face.getWorldPosition(new THREE.Vector3()) : gun.muzzle.clone().addScaledVector(gun.dir, -1));
+        shotCam.rotateZ(THREE.MathUtils.degToRad(-14));                    // a slight tilt, as if strapped on
+        Object.assign(state.dof, { blur: Math.max(state.dof.blur, 1.5), bone: face ? 'j_head' : state.dof.bone });   // he is sharp, the gun in front is soft
       } else {                                                             // behind the muzzle, looking where the barrel points
         shotCam.position.copy(gun.muzzle).addScaledVector(gun.dir, -Math.min(0.7, gun.length * 0.5)).addScaledVector(gun.up, 0.12);
         shotCam.up.copy(gun.up);
         shotCam.lookAt(gun.muzzle.clone().addScaledVector(gun.dir, 4));
       }
       shotCam.up.set(0, 1, 0);
-      shotCam.fov = fovFromFocal(id === 'gun' ? 14 : 18);
+      shotCam.fov = fovFromFocal(id === 'barrel' ? 18 : 14);
+      syncFocusUI();
       cameraEdited();
       return `${preset.label} (fixed to ${prop.name})`;
     }
-    if (id === 'barrel') throw new Error('Barrel POV needs the weapon: use Import prop to attach it to the character first.');
+    if (id !== 'gun') throw new Error(`${preset.label} needs the weapon: use Import prop to attach it to the character first.`);
   }
   const bone = preset.bones.find((b) => bones[b]);
   const left = bones.j_shoulder_le || bones.j_clavicle_le, right = bones.j_shoulder_ri || bones.j_clavicle_ri;
@@ -702,7 +766,7 @@ function drawThroughShotCam(x, y, w, h, withGrid) {
   grid.visible = withGrid && state.scene.grid;
   renderer.setViewport(x, y, w, h);
   renderer.setScissor(x, y, w, h);
-  renderer.render(scene, shotCam);
+  renderShot(shotCam, !withGrid);                    // the small preview in Free mode stays plain
   setOverlays(true);
 }
 
@@ -764,7 +828,7 @@ function renderSamples(acc, total, times) {
     if (times) { state.time = times[k]; camDirty = false; poseDirty = false; }
     applyTrack();
     applyLens(k, total);
-    renderer.render(scene, shotCam);
+    renderShot(shotCam, acc.plain);
     gl.readPixels(0, 0, acc.width, acc.height, gl.RGBA, gl.UNSIGNED_BYTE, acc.px);
     addSample(acc.sum, acc.px);
   }
@@ -817,7 +881,7 @@ async function renderStill(width, height) {
     source.width = width; source.height = height;
     resolveTo(source.getContext('2d'), acc, DOF_SAMPLES * 2, false);
     applyTrack();
-  } else renderer.render(scene, shotCam);
+  } else renderShot(shotCam);
   const blob = await new Promise((res) => source.toBlob(res, 'image/png'));
   setOverlays(true);
   resize();
@@ -963,6 +1027,8 @@ const syncers = [
   bindRange('scn-exposure', () => state.scene.exposure, (v) => { state.scene.exposure = v; applyScene(); scheduleAutosave(); }, (v) => v.toFixed(2)),
   bindRange('scn-fog', () => state.scene.fog, (v) => { state.scene.fog = v; applyScene(); scheduleAutosave(); }, (v) => (v === 0 ? 'off' : v.toFixed(3))),
   () => { if (state.dof.blur > 0 && (state.dof.keys.length || state.dof.bone)) syncFocusUI(); },   // the sharp distance changes with time
+  ...[['look-bloom', 'bloom', 2], ['look-ao', 'ao', 2], ['look-sat', 'saturation', 2], ['look-contrast', 'contrast', 2], ['look-vignette', 'vignette', 2], ['look-grain', 'grain', 2], ['look-rim', 'rim', 1], ['look-fill', 'fill', 1]]
+    .map(([id, key, digits]) => bindRange(id, () => state.look[key], (v) => setLook({ [key]: v }), (v) => v.toFixed(digits))),
   bindRange('cam-lag', () => state.mount.lag || 0, (v) => setMount({ lag: v }), (v) => (v === 0 ? 'off' : `${v.toFixed(2)} s`)),
   bindRange('dof-blur', () => state.dof.blur, (v) => { state.dof.blur = v; syncFocusUI(); scheduleAutosave(); }, (v) => (v === 0 ? 'off' : v.toFixed(1))),
   bindRange('dof-distance', () => clamp(focusDistance(), 0.2, 30), (v) => {
@@ -985,6 +1051,9 @@ function syncKeyUI() {
   $('cam-autokey').checked = state.autoKey;
   $('scn-grid').checked = state.scene.grid;
   $('scn-weather').value = state.scene.weather || 'clear';
+  $('look-preset').value = state.look.preset in LOOKS ? state.look.preset : 'none';
+  $('look-keepred').checked = !!state.look.keepRed;
+  $('look-wet').checked = !!state.look.wet;
   $('tl-duration').value = state.duration;
   $('tl-fps').value = state.fps;
   $('tl-loop').checked = state.loop;
@@ -1012,6 +1081,22 @@ $('btn-key').addEventListener('click', setKeyNow);
 $('btn-del-key').addEventListener('click', deleteSelectedKey);
 $('cam-autokey').addEventListener('change', (e) => { state.autoKey = e.target.checked; scheduleAutosave(); });
 $('scn-weather').replaceChildren(new Option('Clear', 'clear'), ...Object.entries(WEATHER).filter(([, w]) => w).map(([id, w]) => new Option(w.label, id)));
+function setLook(change) {
+  if (change.preset !== undefined) {
+    if (!(change.preset in LOOKS)) throw new Error(`look must be one of ${Object.keys(LOOKS).join(', ')}`);
+    const { label, ...values } = LOOKS[change.preset];
+    Object.assign(state.look, values, { tint: [...values.tint] });
+  }
+  const { preset, ...rest } = change;
+  Object.assign(state.look, rest);
+  applyScene();
+  syncInspector();
+  scheduleAutosave();
+}
+$('look-preset').replaceChildren(...Object.entries(LOOKS).map(([id, l]) => new Option(l.label, id)));
+$('look-preset').addEventListener('change', (e) => setLook({ preset: e.target.value }));
+$('look-keepred').addEventListener('change', (e) => setLook({ keepRed: e.target.checked }));
+$('look-wet').addEventListener('change', (e) => setLook({ wet: e.target.checked }));
 $('scn-weather').addEventListener('change', (e) => { state.scene.weather = e.target.value; applyScene(); scheduleAutosave(); });
 async function importSky(file) {
   const url = URL.createObjectURL(file);
@@ -1098,7 +1183,7 @@ function serialise() {
   return {
     app: 'cinematic', version: 2,
     duration: state.duration, fps: state.fps, time: state.time, loop: state.loop, autoKey: state.autoKey,
-    markers: state.markers, scene: state.scene, pose: state.pose, poseKeys: state.poseKeys, dof: state.dof, queue: jobs.map((j) => ({ ...j, status: j.status === 'rendering' ? 'waiting' : j.status })), mount: state.mount, anim: state.anim, next: state.next, chain: state.chain, props: state.props,
+    markers: state.markers, scene: state.scene, pose: state.pose, poseKeys: state.poseKeys, look: state.look, dof: state.dof, queue: jobs.map((j) => ({ ...j, status: j.status === 'rendering' ? 'waiting' : j.status })), mount: state.mount, anim: state.anim, next: state.next, chain: state.chain, props: state.props,
     camera: { keys: track.toJSON(), rest: { pos: camLocal.position.toArray(), quat: camLocal.quaternion.toArray(), fov: shotCam.fov } },
     actor: { name: actors[1].name, pos: actorRoot.position.toArray(), quat: actorRoot.quaternion.toArray() },
   };
@@ -1110,6 +1195,7 @@ function load(data) {
   Object.assign(state, d, {
     duration: data.duration ?? d.duration, fps: data.fps ?? d.fps, time: 0, loop: !!data.loop, autoKey: !!data.autoKey,
     markers: data.markers ?? [], scene: { ...d.scene, ...data.scene }, pose: (data.version ?? 1) >= 2 ? { ...(data.pose ?? {}) } : {}, poseKeys: Array.isArray(data.poseKeys) ? data.poseKeys.map((k) => ({ t: k.t, pose: { ...k.pose } })).sort((x, y) => x.t - y.t) : [],
+    look: { ...d.look, ...data.look, tint: [...(data.look?.tint ?? d.look.tint)] },
     dof: { ...d.dof, ...data.dof, keys: Array.isArray(data.dof?.keys) ? data.dof.keys.map((k) => ({ t: k.t, distance: k.distance })).sort((x, y) => x.t - y.t) : [] },
     mount: { ...d.mount, ...data.mount }, anim: { ...d.anim, ...data.anim }, next: { ...d.next, ...data.next }, chain: Array.isArray(data.chain) ? data.chain.map((c) => ({ ...c })) : [],
     props: Array.isArray(data.props) ? data.props.map((p) => ({ name: p.name, bone: p.bone ?? null, hidden: [...(p.hidden ?? [])] })) : [],
@@ -1775,6 +1861,7 @@ async function runJob(job, hooks) {
   const transparent = job.background === 'transparent';
   const total = state.dof.blur > 0 ? Math.max(job.samples, DOF_SAMPLES) : job.samples;      // samples averaged per frame
   const acc = total > 1 || transparent ? makeAccumulator(width, height) : null;
+  if (acc) acc.plain = transparent;                    // the look's glow and grade need a background, so cut-outs stay plain
   let depthCanvas = null, depthSink = null;
   if (job.depth) {
     depthCanvas = document.createElement('canvas');
@@ -1794,7 +1881,7 @@ async function runJob(job, hooks) {
   const first = job.format === 'png' && job.done > 0 && job.done < times.length ? job.done : 0;   // carry on where a cut-off image sequence stopped
   job.status = 'rendering';
   job.done = first;
-  if (transparent) { scene.background = null; scene.fog = null; renderer.setClearColor(0x000000, 0); ground.visible = false; grid.visible = false; }
+  if (transparent) { skyDome.visible = false; scene.background = null; scene.fog = null; renderer.setClearColor(0x000000, 0); ground.visible = false; grid.visible = false; }
   try {
     for (let i = first; i < times.length; i++) {
       if (queueStop) { job.status = 'stopped'; await sink.cancel(); return; }
@@ -1806,7 +1893,7 @@ async function runJob(job, hooks) {
         resolveTo(ctx, acc, total, transparent);
       } else {
         applyTrack();
-        renderer.render(scene, shotCam);
+        renderShot(shotCam);
         ctx.drawImage(canvas, 0, 0);
       }
       await sink.add(i);
@@ -1855,6 +1942,7 @@ function setDepthLook(on, range) {
     scene.traverse((o) => { if (o.isMesh && o.material && !Array.isArray(o.material)) { swapped.push([o, o.material]); o.material = depthMaterialFor(o.material); } });
     depthSaved = { swapped, background: scene.background, fog: scene.fog };
     weather.group.visible = false;
+    depthSaved.dome = skyDome.visible; skyDome.visible = false;
     scene.background = BLACK;
     scene.fog = new THREE.Fog(0x000000, 0, range);
   } else if (depthSaved) {
@@ -1862,6 +1950,7 @@ function setDepthLook(on, range) {
     scene.background = depthSaved.background;
     scene.fog = depthSaved.fog;
     weather.group.visible = true;
+    skyDome.visible = depthSaved.dome;
     depthSaved = null;
   }
 }
@@ -1961,6 +2050,7 @@ function sceneSummary() {
       key_positions_are: state.mount.bone ? 'relative to the mount bone' : 'world space',
       keys: track.keys.map((k) => ({ time: k.t, position: k.pos.map(round3), focal_mm: Math.round(focalFromFov(k.fov)), ease: k.ease })),
     },
+    look: state.look,
     depth_of_field: { blur: state.dof.blur, focus_on_bone: state.dof.bone || null, sharp_at_metres: +focusDistance().toFixed(3), focus_keys: state.dof.keys },
     scene: { time_of_day: state.scene.tod, sun_heading: state.scene.azimuth, exposure: state.scene.exposure, fog: state.scene.fog },
     actor: {
@@ -2025,6 +2115,16 @@ const toolHandlers = {
     if (i.weather !== undefined) { if (!(i.weather in WEATHER)) throw new Error(`weather must be one of ${Object.keys(WEATHER).join(', ')}`); s.weather = i.weather; }
     applyScene();
     return JSON.stringify({ time_of_day: s.tod, sun_heading: s.azimuth, exposure: s.exposure, fog: s.fog, weather: s.weather || 'clear' });
+  },
+  set_look: (i) => {
+    const change = {};
+    if (i.preset !== undefined) change.preset = i.preset;
+    for (const [key, lo, hi] of [['bloom', 0, 2], ['ao', 0, 1], ['saturation', 0, 2], ['contrast', 0.5, 2], ['crush', 0, 0.3], ['vignette', 0, 1], ['grain', 0, 0.3], ['rim', 0, 6], ['fill', 0, 6]]) if (i[key] !== undefined) change[key] = numIn(i[key], key, lo, hi);
+    if (i.keep_reds !== undefined) change.keepRed = !!i.keep_reds;
+    if (i.wet_ground !== undefined) change.wet = !!i.wet_ground;
+    if (i.tint !== undefined) change.tint = vec3In(i.tint, 'tint');
+    setLook(change);
+    return JSON.stringify(state.look);
   },
   set_focus: (i) => {
     const d = state.dof;
@@ -2174,7 +2274,7 @@ const TOOL_LABELS = {
   get_scene: 'Reading the scene', set_time: 'Moving the playhead', set_timeline: 'Changing the timeline',
   set_camera: 'Placing the camera', set_camera_keys: 'Keying the camera', delete_camera_keys: 'Deleting camera keys',
   set_scene: 'Adjusting sky and light', list_animations: 'Checking the animations', set_prop: 'Adjusting a prop', set_animation: 'Setting the animation', mount_camera: 'Mounting the camera', move_actor: 'Moving the actor', add_markers: 'Adding markers',
-  list_bones: 'Reading the skeleton', pose_bones: 'Posing bones', key_pose: 'Keying the pose', set_focus: 'Setting the focus', delete_pose_keys: 'Deleting pose keys', reset_pose: 'Resetting the pose', capture_view: 'Looking at the result',
+  list_bones: 'Reading the skeleton', pose_bones: 'Posing bones', key_pose: 'Keying the pose', set_focus: 'Setting the focus', set_look: 'Setting the look', delete_pose_keys: 'Deleting pose keys', reset_pose: 'Resetting the pose', capture_view: 'Looking at the result',
 };
 const aiMessages = [];
 let aiAbort = null, aiUndo = null, aiClientOverride = null;

@@ -144,11 +144,11 @@ export const TOOLS = [
   },
   {
     name: 'mount_camera',
-    description: 'Mount the shot camera on a bone so it rides with the character, or change how it is mounted. Presets place it for you: gun (fixed to the muzzle of the attached weapon, looking back down the barrel at the face; without a weapon prop it rides the weapon hand instead), barrel (fixed on the weapon behind the muzzle, looking where the barrel points; needs a weapon prop), helmet (at the eyes), shoulder (behind the right shoulder), boot (low by the right foot, aimed at the face). preset "none" unmounts it. The camera does not jump when the mount changes.',
+    description: 'Mount the shot camera on a bone so it rides with the character, or change how it is mounted. Presets place it for you: gun (fixed to the muzzle of the attached weapon, looking back down the barrel at the face; without a weapon prop it rides the weapon hand instead), rail (clamped to the side of the barrel near the muzzle, tilted, looking back up at him past the out-of-focus gun, with depth of field on the head; needs a weapon prop), barrel (fixed on the weapon behind the muzzle, looking where the barrel points; needs a weapon prop), helmet (at the eyes), shoulder (behind the right shoulder), boot (low by the right foot, aimed at the face). preset "none" unmounts it. The camera does not jump when the mount changes.',
     input_schema: {
       type: 'object',
       properties: {
-        preset: { type: 'string', enum: ['gun', 'barrel', 'helmet', 'shoulder', 'boot', 'none'] },
+        preset: { type: 'string', enum: ['gun', 'rail', 'barrel', 'helmet', 'shoulder', 'boot', 'none'] },
         bone: { type: ['string', 'null'], description: 'Bone to ride on, or null to unmount.' },
         look_at_bone: { type: ['string', 'null'], description: 'Bone the camera stays aimed at, or null to aim freely.' },
         keep_level: { type: 'boolean', description: 'True rides the bone position only so the horizon stays level; false also tilts and shakes with the bone.' },
@@ -197,6 +197,22 @@ export const TOOLS = [
         },
       },
       required: ['operations'],
+    },
+  },
+  {
+    name: 'set_look',
+    description: 'The finish of the picture, applied after the scene is drawn: glow on bright areas, soft contact shadowing, a film grade, vignette, grain, a rim light from behind, and dark wet ground. Presets: noir (black and white with the reds kept, strong contrast), gritty (dark, desaturated, green-grey), golden (warm sun, gentle), none. Pass a preset, then any fields to adjust. Pair noir and gritty with an overcast or night time of day, some fog, and rain. capture_view does not show the look; test renders and the queue do.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        preset: { type: 'string', enum: ['none', 'noir', 'gritty', 'golden'] },
+        bloom: { type: 'number', description: 'Glow, 0 to 2.' }, ao: { type: 'number', description: 'Contact shadowing, 0 to 1.' },
+        saturation: { type: 'number', description: '0 is black and white, 1 is unchanged.' }, keep_reds: { type: 'boolean', description: 'Keep red things in colour when saturation is low.' },
+        contrast: { type: 'number', description: '1 is unchanged; 1.3 is punchy.' }, crush: { type: 'number', description: 'How much the darkest tones go to pure black, 0 to 0.3.' },
+        tint: { type: 'array', items: { type: 'number' }, description: 'Red, green, blue multipliers, e.g. [1.07, 1, 0.9] is warm.' },
+        vignette: { type: 'number' }, grain: { type: 'number', description: '0 to 0.3; 0.05 is subtle.' },
+        rim: { type: 'number', description: 'Strength of the back light, 0 to 6.' }, fill: { type: 'number', description: 'Soft light from the camera side so a back-lit subject is not a silhouette, 0 to 6.' }, wet_ground: { type: 'boolean' },
+      },
     },
   },
   {
