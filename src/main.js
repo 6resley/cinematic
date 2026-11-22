@@ -155,7 +155,7 @@ orbit.dampingFactor = 0.12;
 const gizmo = new TransformControls(freeCam, canvas);
 gizmo.setSize(0.8);
 scene.add(gizmo);
-gizmo.addEventListener('dragging-changed', (e) => { orbit.enabled = !e.value && mode === 'free'; });
+gizmo.addEventListener('dragging-changed', (e) => { orbit.enabled = !e.value && mode === 'free' && !walking; });
 gizmo.addEventListener('objectChange', () => {
   if (gizmo.object === shotCam) cameraEdited();
   else if (gizmo.object?.isBone) {                    // posing a bone by hand: keep the turn as an offset over the animation
@@ -174,6 +174,75 @@ window.addEventListener('keydown', (e) => {
 });
 window.addEventListener('keyup', (e) => { shiftHeld = e.shiftKey; freeHeld.delete(e.code); });
 window.addEventListener('blur', () => { freeHeld.clear(); shiftHeld = false; });
+// ---- walk mode: explore the map on foot. Mouse looks, W A S D walks, Shift runs, Space jumps; the ground and walls are solid.
+const EYE_HEIGHT = 1.7, WALK_SPEED = 3.4, RUN_SPEED = 7.5, STEP_UP = 0.6, GRAVITY = 20;
+let walking = false, walkYaw = 0, walkPitch = 0, walkFall = 0, walkGrounded = false, walkLocked = false, jumpAsked = false;
+const _walkRay = new THREE.Raycaster(), _walkDir = new THREE.Vector3(), _walkFrom = new THREE.Vector3(), _walkEuler = new THREE.Euler(0, 0, 0, 'YXZ');
+const DOWN = new THREE.Vector3(0, -1, 0);
+const walkSolids = () => (mapName ? [mapRoot] : [ground]);
+const firstSolidHit = (far) => { _walkRay.far = far; return _walkRay.intersectObjects(walkSolids(), true).find((h) => h.object.visible) || null; };
+
+function setWalk(on) {
+  if (on === walking) return;
+  if (on && mode !== 'free') setMode('free');
+  walking = on;
+  orbit.enabled = !on && mode === 'free';
+  freeHeld.clear();
+  if (on) {
+    _walkEuler.setFromQuaternion(freeCam.quaternion, 'YXZ');
+    walkYaw = _walkEuler.y; walkPitch = _walkEuler.x; walkFall = 0; walkGrounded = false; walkLocked = false;
+    selectActor(null);
+    try { canvas.requestPointerLock?.(); } catch { /* looking with a held drag still works */ }
+    setStatus('Walking: move the mouse to look, W A S D to walk, Shift to run, Space to jump. F or Esc to stop.');
+  } else {
+    if (document.pointerLockElement === canvas) document.exitPointerLock();
+    orbit.target.copy(freeCam.position).add(_walkDir.set(0, 0, -4).applyQuaternion(freeCam.quaternion));    // orbit around what he was looking at
+    setStatus('Stopped walking');
+  }
+  $('btn-walk').classList.toggle('active', on);
+}
+document.addEventListener('pointerlockchange', () => {
+  if (document.pointerLockElement === canvas) walkLocked = true;
+  else if (walking && walkLocked) setWalk(false);                 // Esc releases the mouse and ends the walk
+});
+canvas.addEventListener('mousemove', (e) => {
+  if (!walking || (document.pointerLockElement !== canvas && !(e.buttons & 1))) return;
+  walkYaw -= e.movementX * 0.0022;
+  walkPitch = clamp(walkPitch - e.movementY * 0.0022, -1.5, 1.5);
+});
+
+function walkStep(dt) {
+  dt = Math.min(dt, 0.05);
+  freeCam.quaternion.setFromEuler(_walkEuler.set(walkPitch, walkYaw, 0, 'YXZ'));
+  const pos = freeCam.position;
+  _walkDir.set((freeHeld.has('KeyD') ? 1 : 0) - (freeHeld.has('KeyA') ? 1 : 0), 0, (freeHeld.has('KeyS') ? 1 : 0) - (freeHeld.has('KeyW') ? 1 : 0));
+  if (_walkDir.lengthSq() > 0) {
+    _walkDir.normalize().applyAxisAngle(THREE.Object3D.DEFAULT_UP, walkYaw);
+    const dist = (shiftHeld ? RUN_SPEED : WALK_SPEED) * dt;
+    _walkRay.set(_walkFrom.set(pos.x, pos.y - EYE_HEIGHT + STEP_UP + 0.3, pos.z), _walkDir);      // a wall at waist height stops him
+    if (!firstSolidHit(dist + 0.35)) pos.addScaledVector(_walkDir, dist);
+  }
+  _walkRay.set(_walkFrom.set(pos.x, pos.y - EYE_HEIGHT + STEP_UP, pos.z), DOWN);                   // the ground under his feet, allowing a step up
+  const hit = firstSolidHit(200), feet = pos.y - EYE_HEIGHT;
+  if (jumpAsked && walkGrounded) { walkFall = 6; walkGrounded = false; }
+  jumpAsked = false;
+  if (hit && walkFall <= 0 && feet - hit.point.y < 0.08) {         // standing: follow the ground smoothly (stairs, slopes)
+    pos.y += (hit.point.y + EYE_HEIGHT - pos.y) * Math.min(1, dt * 14);
+    walkFall = 0; walkGrounded = true;
+  } else {                                                         // in the air: fall until the ground catches him
+    walkFall -= GRAVITY * dt;
+    pos.y += walkFall * dt;
+    walkGrounded = false;
+    if (hit && pos.y - EYE_HEIGHT < hit.point.y) { pos.y = hit.point.y + EYE_HEIGHT; walkFall = 0; walkGrounded = true; }
+    if (!hit && pos.y < -500) { pos.y = 50; walkFall = 0; }       // fell out of the world: put him back above it
+  }
+}
+$('btn-walk').addEventListener('click', () => setWalk(!walking));
+window.addEventListener('keydown', (e) => {
+  if (/^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName) || e.ctrlKey || e.metaKey) return;
+  if (e.code === 'KeyF') setWalk(!walking);
+  else if (e.code === 'Space' && walking) { jumpAsked = true; e.preventDefault(); e.stopImmediatePropagation(); }
+}, true);
 const fly = new FlyLook(canvas, () => cameraEdited());
 fly.camera = shotCam;
 resetCameras();
@@ -685,8 +754,9 @@ function keysChanged() {
 
 // ------------------------------------------------------------------ view modes
 function setMode(next) {
+  if (next !== 'free' && walking) setWalk(false);
   mode = next;
-  orbit.enabled = mode === 'free';
+  orbit.enabled = mode === 'free' && !walking;
   fly.setEnabled(mode === 'camera');
   $('mode-camera').classList.toggle('active', mode === 'camera');
   $('mode-free').classList.toggle('active', mode === 'free');
@@ -745,7 +815,7 @@ const _pick = new THREE.Raycaster(), _pickAt = new THREE.Vector2();
 let pressAt = null;
 canvas.addEventListener('pointerdown', (e) => { pressAt = e.button === 0 ? [e.clientX, e.clientY] : null; });
 canvas.addEventListener('pointerup', (e) => {
-  if (!pressAt || mode !== 'free' || gizmo.dragging || Math.hypot(e.clientX - pressAt[0], e.clientY - pressAt[1]) > 4) { pressAt = null; return; }
+  if (!pressAt || mode !== 'free' || walking || gizmo.dragging || Math.hypot(e.clientX - pressAt[0], e.clientY - pressAt[1]) > 4) { pressAt = null; return; }
   pressAt = null;
   const r = canvas.getBoundingClientRect();
   _pickAt.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
@@ -1499,8 +1569,11 @@ const mapRoot = new THREE.Group();
 scene.add(mapRoot);
 let mapName = null;
 /** How a map material should be drawn, judged from its name (the game's own material settings are not exported). */
-function mapMaterialKind(name) {
+function mapMaterialKind(name, techset) {
   const n = name.toLowerCase().split('/').pop();
+  if (/^(shadowcaster|clip|caulk|nodraw|portal|trigger|hint|lightgrid|reflection)/.test(n) || /^tools?_/.test(n)) return 'hidden';
+  const how = techset && /_([rtba])0c0/.exec(techset.toLowerCase());        // the game's own answer, when the rip includes it
+  if (how) return /glass/.test(n) ? 'glass' : { r: 'solid', t: 'cutout', b: 'decal', a: 'glow' }[how[1]];
   if (/^(shadowcaster|clip|caulk|nodraw|portal|trigger|hint|lightgrid|reflection)/.test(n) || /^tools?_/.test(n)) return 'hidden';
   if (/glass/.test(n)) return 'glass';
   if (/fence|wire|grate|chainlink|foliage|leaf|branch|grass/.test(n) && !/decal/.test(n)) return 'cutout';
@@ -1514,14 +1587,17 @@ async function importMap(files, preferName) {
   if (!loaded) return null;
   mapRoot.clear();
   mapRoot.add(loaded.scene);
+  const techsets = new Map();                          // material -> how the game draws it, from <map>_materials.txt
+  const drawFile = files.find((f) => f.name.toLowerCase() === `${loaded.name.toLowerCase()}_materials.txt`);
+  if (drawFile) for (const line of (await drawFile.text()).split(/\r?\n/)) { const part = line.split('\t'); if (part.length >= 2 && part[1] !== 'None') techsets.set(part[0], part[1]); }
   let meshes = 0;
   loaded.scene.traverse((o) => {
     if (!o.isMesh) return;
     meshes++;
     o.castShadow = true; o.receiveShadow = true;
     for (const m of Array.isArray(o.material) ? o.material : [o.material]) {
-      let kind = mapMaterialKind(m.name);
-      if (kind === 'solid' && /^mc\//.test(m.name) && m.map?.image?.data) {   // placed models (trees, bushes, fences): see-through parts are in the texture
+      let kind = mapMaterialKind(m.name, techsets.get(m.name));
+      if (kind === 'solid' && !techsets.has(m.name) && /^mc\//.test(m.name) && m.map?.image?.data) {   // placed models (trees, bushes, fences): see-through parts are in the texture
         if (!cutoutChecked.has(m)) {
           const d = m.map.image.data, step = Math.max(4, Math.floor(d.length / 4 / 4000) * 4);
           let clear = 0, n = 0;
@@ -1535,6 +1611,7 @@ async function importMap(files, preferName) {
         Object.assign(m, { transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2, alphaTest: 0.02 });
         o.castShadow = false; o.renderOrder = 2;
       } else if (kind === 'cutout') { m.alphaTest = 0.5; m.transparent = false; m.alphaToCoverage = true; }   // fences, wires, grates
+      else if (kind === 'glow') { Object.assign(m, { transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }); o.castShadow = false; o.renderOrder = 4; }   // light beams, glows
       else if (kind === 'glass') { Object.assign(m, { transparent: true, opacity: 0.35, depthWrite: false, roughness: 0.1 }); o.castShadow = false; o.renderOrder = 3; }
       for (const key of ['map', 'normalMap', 'roughnessMap']) if (m[key]) { m[key].wrapS = m[key].wrapT = THREE.RepeatWrapping; m[key].needsUpdate = true; }   // world textures tile
     }
@@ -2471,7 +2548,8 @@ function tick() {
     updatePlayhead();
   }
   fly.update(dt, shiftHeld);
-  if (mode === 'free' && freeHeld.size) {              // fly the free view with W A S D Q E; Shift goes faster
+  if (walking) walkStep(dt);
+  else if (mode === 'free' && freeHeld.size) {         // fly the free view with W A S D Q E; Shift goes faster
     const speed = Math.max(3, freeCam.position.distanceTo(orbit.target) * 0.6) * (shiftHeld ? 4 : 1) * dt;
     _flyStep.set(0, 0, 0);
     for (const code of freeHeld) _flyStep.add(_flyDir.fromArray(FREE_KEYS[code]));
@@ -2535,6 +2613,8 @@ async function scanLibrary() {
 async function libraryFiles(modelPath) {
   const dir = modelPath.includes('/') ? modelPath.slice(0, modelPath.lastIndexOf('/') + 1) : '';
   const wanted = [modelPath];
+  const drawList = libraryIndex.get(`${dir}${baseName(modelPath)}_materials.txt`.toLowerCase());
+  if (drawList) wanted.push(drawList);
   const list = libraryIndex.get(`${dir}${baseName(modelPath)}_textures.txt`.toLowerCase());
   if (list) {
     wanted.push(list);
@@ -2626,6 +2706,6 @@ tick();
 // Handle for automated checks and for poking at things from the console.
 window.app = {
   state, get track() { return track; }, get bones() { return bones; }, shotCam, freeCam, actorRoot,
-  setTime, setMode, setKeyNow, setMount, applyMountPreset, selectActor, renderStill, serialise, load, importFiles, importProp, get props() { return props; }, importAnimations, setAnimation, setNext, setChain, keyPose, setPoseBone, scanLibrary, loadFromLibrary, openProject, libraryLists, libraryLoaded, importSky, importMap, placeActorAtView, mapRoot, stepHistory, flushAutosave, keyFocus, focusDistance, gizmo, get poseKeys() { return state.poseKeys; }, execTool, addJob, runQueue, get jobs() { return jobs; },
+  setTime, setMode, setKeyNow, setMount, applyMountPreset, selectActor, renderStill, serialise, load, importFiles, importProp, get props() { return props; }, importAnimations, setAnimation, setNext, setChain, keyPose, setPoseBone, scanLibrary, loadFromLibrary, openProject, libraryLists, libraryLoaded, importSky, importMap, placeActorAtView, mapRoot, setWalk, get walking() { return walking; }, stepHistory, flushAutosave, keyFocus, focusDistance, gizmo, get poseKeys() { return state.poseKeys; }, execTool, addJob, runQueue, get jobs() { return jobs; },
   assistant: { send: aiSend, messages: aiMessages, useClient(c) { aiClientOverride = c; } },
 };
