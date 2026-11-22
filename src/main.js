@@ -622,10 +622,28 @@ function syncLocalFromWorld() {
   toLocal(mountFrame, shotCam, camLocal);
 }
 
+/** What a key rides on, as text, so two keys can be compared: a different mount between neighbours is a cut. */
+const mountSign = (k) => (k.mount ? `${k.mount.bone}|${k.mount.lookAt}|${k.mount.level}` : '');
+let mountShown = '';
+
 function applyTrack() {
   applyActor();
+  let held = null;
+  if (!camDirty && track.keys.some((k) => k.mount)) {                // keys that carry their own mount: the edit lives on the track
+    const keys = track.keys;
+    let i = 0;
+    while (i + 1 < keys.length && keys[i + 1].t <= state.time + 1e-9) i++;
+    const a = keys[i], b = keys[i + 1];
+    if (a.mount) Object.assign(state.mount, a.mount);
+    if (b && mountSign(a) !== mountSign(b)) held = a;                // hold this camera until the cut to the next
+    if (mountSign(a) !== mountShown) { mountShown = mountSign(a); syncMountUI(); }
+  }
   updateFrame();
-  if (!camDirty && track.evaluate(state.time, pose)) {
+  if (held) {
+    camLocal.position.fromArray(held.pos);
+    camLocal.quaternion.fromArray(held.quat);
+    if (shotCam.fov !== held.fov) { shotCam.fov = held.fov; shotCam.updateProjectionMatrix(); }
+  } else if (!camDirty && track.evaluate(state.time, pose)) {
     camLocal.position.copy(pose.position);
     camLocal.quaternion.copy(pose.quaternion);
     if (shotCam.fov !== pose.fov) { shotCam.fov = pose.fov; shotCam.updateProjectionMatrix(); }
@@ -645,6 +663,7 @@ function applyTrack() {
 
 function setKeyNow() {
   selectedKey = track.setKey(state.time, { position: camLocal.position, quaternion: camLocal.quaternion, fov: shotCam.fov });
+  selectedKey.mount = { ...state.mount };              // a key remembers what the camera was riding on; a change of mount between keys is a cut
   camDirty = false;
   keysChanged();
 }
@@ -658,7 +677,7 @@ function setMount(next) {
   if (state.mount.bone && !bones[state.mount.bone]) state.mount.bone = null;
   if (state.mount.lookAt && !bones[state.mount.lookAt]) state.mount.lookAt = null;
   updateFrame();
-  reframeKeys(track.keys, old, mountFrame);
+  if (!track.keys.some((k) => k.mount)) reframeKeys(track.keys, old, mountFrame);   // keys with their own mount stay as they were shot
   toLocal(mountFrame, world, camLocal);
   keysChanged();
   syncMountUI();

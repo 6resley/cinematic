@@ -24,7 +24,7 @@ function catmullRom(p0, p1, p2, p3, u) {
 
 export class CameraTrack {
   constructor(keys = []) {
-    this.keys = keys.map((k) => ({ t: k.t, pos: [...k.pos], quat: [...k.quat], fov: k.fov, ease: k.ease ?? 'auto' }));
+    this.keys = keys.map((k) => ({ t: k.t, pos: [...k.pos], quat: [...k.quat], fov: k.fov, ease: k.ease ?? 'auto', ...(k.mount ? { mount: { ...k.mount } } : {}) }));
     this.sort();
   }
 
