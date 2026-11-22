@@ -22,6 +22,7 @@ const SENSOR_HALF = 12;                       // half of a 24 mm sensor height
 const fovFromFocal = (mm) => THREE.MathUtils.radToDeg(2 * Math.atan(SENSOR_HALF / mm));
 const focalFromFov = (fov) => SENSOR_HALF / Math.tan(THREE.MathUtils.degToRad(fov) / 2);
 const AUTOSAVE_KEY = 'cinematic.autosave.v1';
+const APP_BUILD = 'build 28 · camera cuts';        // shown in the top bar, so it is easy to tell which copy is running
 
 // ------------------------------------------------------------------ state
 const defaults = () => ({
@@ -2740,6 +2741,7 @@ try {
   const saved = localStorage.getItem(AUTOSAVE_KEY);
   if (saved) { savedSession = JSON.parse(saved); load(savedSession); setStatus('Restored your last session'); }
 } catch { /* no autosave or it was unreadable: start fresh */ }
+document.querySelector('.brand').textContent = `Cinematic · ${APP_BUILD}`;
 scanLibrary().then(async (anims) => {                  // then bring back the models, map and animations the last session used
   await loadLibraryAnimations(anims);
   if (savedSession?.library && Object.values(savedSession.library).some(Boolean)) { await openProject(savedSession); setStatus('Restored your last session with its models'); }
