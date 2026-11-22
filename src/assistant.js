@@ -123,6 +123,7 @@ export const TOOLS = [
         switch_at: { type: 'number', description: 'Time on the timeline, in seconds, when the second animation takes over.' },
         blend: { type: 'number', description: 'Seconds to blend from the first animation into the second, 0 to 2. About 0.2 looks natural for a hit.' },
         keep_above_ground: { type: 'boolean', description: 'True (the default) bends an arm or leg just enough when the animation would sink a hand or foot into the flat ground.' },
+        more: { type: 'array', description: 'Further animations after `then`, in order, each taking over at its own time and continuing from where the character is. Replaces the whole list; pass [] to clear.', items: { type: 'object', properties: { name: { type: 'string' }, switch_at: { type: 'number' }, blend: { type: 'number' } }, required: ['name', 'switch_at'] } },
         travel: { type: 'boolean', description: 'True lets the animation carry the character across the scene (a sprint covers ground); false keeps it on the spot.' },
       },
     },

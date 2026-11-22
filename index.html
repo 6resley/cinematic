@@ -106,6 +106,8 @@
         <label class="row"><span>Then play</span><select id="anim-next" title="A second animation that takes over part-way through, such as a death after a sprint"></select></label>
         <label class="row"><span>Switch at</span><input id="anim-next-at" type="number" min="0" step="0.1"><output>s</output></label>
         <label class="row"><span>Blend over</span><input id="anim-next-blend" type="number" min="0" max="2" step="0.05"><output>s</output></label>
+        <div id="anim-chain"></div>
+        <div class="row buttons"><button id="btn-chain-add" title="Add another animation that takes over later: clip, the time it takes over, and the blend">Add another clip</button></div>
         <p class="hint" id="anim-info"></p>
         <h3>Pose</h3>
         <label class="row"><span>Bone</span><select id="pose-bone" title="Pick a bone, then turn it with the handle in the viewport (Free mode)"></select></label>
